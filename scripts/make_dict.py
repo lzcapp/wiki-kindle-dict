@@ -94,9 +94,15 @@ def entry_xhtml(head: str, definition: str, aliases: list[str]) -> str:
 
 
 def write_content(build: Path, lang: str, title: str, rows, chunk: int) -> list[str]:
-    """按 chunk 分片写出 content*.html，返回文件名列表。"""
+    """按 chunk 分片写出 content*.html，返回文件名列表。
+
+    注意：每个分片都必须带上完整的文件头（含 <mbp:frameset>），
+    否则只有第一个文件是良构的，其余会被 Amazon 的词典解析器静默丢弃
+    （kindling 校验会报 R6.1 / R15.5）。
+    """
     files: list[str] = []
-    buf = [HTML_HEAD.format(lang=esc(lang), title=esc(title))]
+    header = HTML_HEAD.format(lang=esc(lang), title=esc(title))
+    buf = [header]
     count = 0
     part = 1
 
@@ -107,16 +113,30 @@ def write_content(build: Path, lang: str, title: str, rows, chunk: int) -> list[
         (build / name).write_text("".join(buf), encoding="utf-8")
         files.append(name)
         part += 1
-        buf = []
+        buf = [header]
 
     for head, definition, aliases in rows:
         buf.append(entry_xhtml(head, definition, aliases))
         count += 1
         if count % chunk == 0:
             flush()
-    if buf:
+    if count % chunk or not files:
         flush()
     return files
+
+
+def check_well_formed(build: Path, files: list[str]) -> list[str]:
+    """自检：每个正文文件必须是良构 XML。返回有问题的文件名。"""
+    import xml.etree.ElementTree as ET
+
+    bad: list[str] = []
+    for name in files:
+        try:
+            for _ in ET.iterparse(build / name, events=("end",)):
+                pass
+        except ET.ParseError as exc:
+            bad.append(f"{name}: {exc}")
+    return bad
 
 
 def write_opf(build: Path, lang: str, title: str, uid: str, content_files: list[str]) -> None:
@@ -237,6 +257,14 @@ def main() -> int:
 
     uid = f"wikipedia-dict-{args.lang}"
     content_files = write_content(args.out, args.lang, args.title, rows, args.chunk)
+
+    bad = check_well_formed(args.out, content_files)
+    if bad:
+        print("正文文件不是良构 XML，已中止（否则词典会静默失效）：", file=sys.stderr)
+        for item in bad:
+            print("  " + item, file=sys.stderr)
+        return 1
+
     write_opf(args.out, args.lang, args.title, uid, content_files)
     write_ncx(args.out, args.title, uid)
     write_usage(args.out, args.lang, args.title, args.source, args.stamp, len(rows))

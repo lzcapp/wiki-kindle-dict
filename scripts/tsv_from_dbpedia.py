@@ -21,7 +21,9 @@ import unicodedata
 import urllib.parse
 from pathlib import Path
 
-TRIPLE = re.compile(r'^<([^>]+)>\s+<[^>]*ontology/abstract>\s+"(.*)"@([A-Za-z-]+)\s*\.\s*$')
+TRIPLE = re.compile(
+    r'^<([^>]+)>\s+<[^>]*(?:ontology/abstract|rdf-schema#comment)>\s+"(.*)"@([A-Za-z-]+)\s*\.\s*$'
+)
 RESOURCE_PREFIX = "http://dbpedia.org/resource/"
 XML_ILLEGAL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufffe\uffff]")
 WS = re.compile(r"\s+")
@@ -65,7 +67,13 @@ def unescape_nt(literal: str) -> str:
 
 
 def title_from_uri(uri: str) -> str:
-    name = uri[len(RESOURCE_PREFIX) :] if uri.startswith(RESOURCE_PREFIX) else uri
+    # 兼容 http://dbpedia.org/resource/X 与 http://zh.dbpedia.org/resource/X
+    if "/resource/" in uri:
+        name = uri.split("/resource/", 1)[1]
+    elif RESOURCE_PREFIX and uri.startswith(RESOURCE_PREFIX):
+        name = uri[len(RESOURCE_PREFIX) :]
+    else:
+        name = uri
     name = urllib.parse.unquote(name)
     return name.replace("_", " ").strip()
 

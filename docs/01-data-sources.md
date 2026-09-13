@@ -27,8 +27,16 @@ DBpedia 已经替我们做好了"抽首段"这一步，输出就是一段式摘�
 | `short-abstracts_lang=zh.ttl.bz2` | 143,464,633 B（约 137 MB） |
 
 - 地址：`https://downloads.dbpedia.org/repo/dbpedia/text/short-abstracts/2022.09.01/`
-- 格式：N-Triples（每行 `〈资源URI〉 〈ontology/abstract〉 "文本"@lang .`）
-- 解析：`scripts/tsv_from_dbpedia.py`
+- 格式：N-Triples。**注意谓词与域名与直觉不同**，实测真实行形如：
+
+  ```
+  <http://zh.dbpedia.org/resource/愚人买鞋> <http://www.w3.org/2000/01/rdf-schema#comment> "愚人买鞋，是中国大陆…"@zh .
+  ```
+
+  谓词是 **`rdfs:comment`（`…/rdf-schema#comment`）**，不是 `ontology/abstract`；中文版域名是
+  **`zh.dbpedia.org`**，词头取 `/resource/` 之后的部分并做百分号解码、下划线转空格。
+  按 `ontology/abstract` 去匹配会**一条都取不到**（踩过一次）。
+- 解析：`scripts/tsv_from_dbpedia.py`（同时兼容两种谓词与两种域名）
 
 **优点**：体量小、解析快、天然是"首段"。
 **缺点**：快照为 **2022-09**，比当前落后约 4 年；DBpedia 只收录通过其筛选规则的对象，覆盖率低于维基本身的全部条目。
