@@ -4,14 +4,14 @@
 
 ```bash
 PY="C:/Users/Rainy/.workbuddy/binaries/python/versions/3.13.12/python.exe"
-cd C:/Users/Rainy/WorkBuddy/Kindle
+cd D:/wiki-kindle-dict
 
 # ① 编译器
 "$PY" scripts/fetch.py \
   https://github.com/ciscoriordan/kindling/releases/download/v0.45.1/kindling-cli-windows.exe \
   data/kindling.part
 # 校验：sha256 应为 1a361eef53e95a9ac14eb01cee3f54bdc84f798e0ebad06d2ab447fffee06893
-/c/Windows/System32/certutil.exe -hashfile "C:\Users\Rainy\WorkBuddy\Kindle\data\kindling.part" SHA256
+/c/Windows/System32/certutil.exe -hashfile "D:\wiki-kindle-dict\data\kindling.part" SHA256
 # 通过后重命名为 bin/kindling-cli.exe
 
 # ② 数据（中文走 DBpedia 起步）

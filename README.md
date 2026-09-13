@@ -4,6 +4,8 @@
 
 目标产物：**中文一本 + 英文一本**，都是全量收录、MOBI 格式、Paperwhite 11/12 代可用。
 
+> **项目位置：`D:\wiki-kindle-dict`**（原先在 C 盘的 `WorkBuddy\Kindle`，因 C 盘空间不足已整体迁移）。
+
 ## 当前状态
 
 | 环节 | 状态 |

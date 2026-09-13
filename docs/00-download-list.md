@@ -1,6 +1,8 @@
 # 下载清单
 
-把文件放到 `C:\Users\Rainy\WorkBuddy\Kindle\data\`。
+> **项目位置已迁到 `D:\wiki-kindle-dict`**（C 盘空间告急）。文件请放进 `D:\wiki-kindle-dict\data\`。
+
+把文件放到 `D:\wiki-kindle-dict\data\`。
 
 > **文件名不必改。** 脚本都是把文件路径当参数传进去的，保留官方原始名（如 `short-abstracts_lang=zh.ttl.bz2`）完全没问题，调用时照实际名字传即可。上表的「保存为」只是建议命名。
 
