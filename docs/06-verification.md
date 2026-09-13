@@ -93,7 +93,51 @@ exth[105].value           = "Dictionaries"
 **结论**：中文全量可编译、被识别为词典、索引正确。但**已用掉 PalmDB 记录上限的 96.5%**，
 这是比体积更紧的约束，细节见 [05](05-scaling-english-plan.md) §2。
 
-## 3. 英文小样实测（20 万条）
+## 3. 中文全量实测（官方 dump 源）——**当前交付版**
+
+**日期**：2026-09-13
+**输入**：`data/zhwiki-20260901-pages-articles.xml.bz2`（3.2 GB）
+**产物**：`out/wikipedia-zh.mobi`
+
+先解析 dump（14 分钟，扫描 4,954,112 页）：
+
+```
+统计：ns0 正文 3007321 | 重定向 1443134 | 输出词条 1284543
+      标题被过滤 33252 | 无首段 71132 | 首段过短 175260
+词条 1,284,543 条 → build/zh-dump.tsv（369 MB）
+异名 1,443,134 条 → build/zh-dump-aliases.tsv（50 MB）
+```
+
+再打包编译：
+
+```
+并入异名 1,296,329 条（单条上限 64）
+词条 1,284,543 条，正文 13 个文件，共 572.4 MB
+0 errors, 1 warnings
+Kindle limits: split 1284543 entries into 14 sections
+Compressed text into 53203 records (435832198 bytes uncompressed)
+  Orth INDX: 959 records
+Wrote out/wikipedia-zh.mobi (319150858 bytes = 304 MB)
+MOBI check: 16 P0 checks passed, 0 P1 warnings
+```
+
+`kindling dump` 关键行：
+
+```
+palmdb.rec_count          = 54166    ← 占 65535 上限的 82.7%
+palmdoc.text_record_count = 53203
+mobi.orth_index           = 53204
+mobi.dict_input_lang      = 4        ← 中文
+mobi.text_encoding        = 65001    ← UTF-8
+exth[105].value           = "Dictionaries"
+```
+
+**这一版比 DBpedia 源更优**：条目更多（128.5 万 vs 112.5 万）、内容更新（2026-09 vs 2022-09）、
+带完整重定向异名（130 万条，简体/繁体/别名都能查到），体积反而更小（304 MB vs 317 MB）。
+
+对照实验：`--no-kindle-limits` 对记录数**无影响**（两次都是 53,203 条），可以不用这个开关。
+
+## 4. 英文小样实测（20 万条）
 
 **日期**：2026-09-13
 **输入**：`data/short-abstracts_lang=en.ttl.bz2`（584 MB，取前 20 万条）
@@ -111,7 +155,7 @@ exth[105].value           = "Dictionaries"
 
 用途：得到英文的「每条记录数 = 0.1033」这一常量，用于外推英文全量需要分几卷。
 
-## 4. 踩过的坑：分片写正文时漏掉文件头
+## 5. 踩过的坑：分片写正文时漏掉文件头
 
 第一次编译中文全量时，`make_dict.py` 的 `write_content()` 在分片后没有给后续文件补回文件头，
 导致 `content2.html` ~ `content12.html` 缺少 `<mbp:frameset>` 包裹：
@@ -129,13 +173,13 @@ exth[105].value           = "Dictionaries"
 同时给 `make_dict.py` 加了自查：写出正文后用 `ElementTree` 逐文件验证良构性，
 不合格直接**中止构建并返回 1**，不让它悄悄过去。
 
-## 5. 待补：真机验证
+## 6. 待补：真机验证
 
 需要拿到设备后确认（Paperwhite 11/12 代）：
 
 - [ ] 侧载后出现在「设置 → 语言和字典 → 字典」的中文条目下
 - [ ] 选词能弹出本词典的释义
-- [ ] 317 MB 的中文全量在真机上的查词响应速度
-- [ ] 繁体异名命中（如选「廣東省」能查到「广东省」）——**需先补异名表**，
-      当前中文全量用的是 DBpedia 源，尚未并入重定向异名
+- [ ] **繁体异名命中**（如选「廣東省」能查到「广东省」）——本版已并入 130 万条重定向异名，应能命中
+- [ ] 304 MB / 128 万条下的查词响应速度
 - [ ] **同语言多本词典时 Kindle 是否回退查询**（决定英文能否分卷，见 [05](05-scaling-english-plan.md) §3）
+- [ ] 简繁混排正文里的选词是否稳定（中文维基正文常见混排）
