@@ -1,0 +1,18 @@
+# 原始数据与产物：体积大，不入版本库
+data/
+build/
+out/
+bin/
+
+# 本机探测用的临时文件
+scripts/_probe.txt
+data/probe*.txt
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store

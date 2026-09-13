@@ -1,0 +1,11 @@
+# 统一换行，避免 Windows 上 CRLF 混入脚本
+* text=auto eol=lf
+*.tsv text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+# 二进制产物
+*.mobi binary
+*.azw3 binary
+*.exe binary
+*.bz2 binary
+*.gz binary
