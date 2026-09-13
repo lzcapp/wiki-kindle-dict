@@ -4,8 +4,6 @@
 
 目标产物：**中文一本 + 英文一本**，都是全量收录、MOBI 格式、Paperwhite 11/12 代可用。
 
-> **项目位置：`D:\wiki-kindle-dict`**（原先在 C 盘的 `WorkBuddy\Kindle`，因 C 盘空间不足已整体迁移）。
-
 ## 当前状态
 
 | 环节 | 状态 |
@@ -65,7 +63,8 @@
 ## 4. 快速开始
 
 ```bash
-PY="C:/Users/Rainy/.workbuddy/binaries/python/versions/3.13.12/python.exe"
+# 在仓库根目录执行。PY 按你自己的环境替换（脚本只依赖 Python 标准库，3.10+ 均可）
+PY=python
 
 # 1) 下载编译器和数据
 "$PY" scripts/fetch.py <kindling-cli-windows.exe URL> bin/kindling-cli.exe
@@ -119,11 +118,11 @@ PY="C:/Users/Rainy/.workbuddy/binaries/python/versions/3.13.12/python.exe"
 
 维基百科内容采用 **CC BY-SA 4.0**。生成的词典内必须带署名页（`make_dict.py` 会自动生成 `usage.html`），再分发时须保留署名并以相同协议共享。
 
-## 8. 本机环境注意事项
+## 8. 本环境踩过的坑
 
-这几个坑会浪费大量时间，先记下来：
+如果也在同类受限环境里跑这套管线，这几个坑会伪装成"故障"，先记下来：
 
-- bash 子进程**没有 coreutils**（`mkdir`/`ls`/`head`/`tail` 均不可用），只有 `/usr/bin/{grep,wc,head}` 可用。建目录请用文件写入工具。
-- **PowerShell 的写操作会静默失败**（退出码 0 但文件不存在），不要依赖它。
-- **curl 无法写入工作区**，报 `curl: (23) client returned ERROR on write`。改用 `scripts/fetch.py`（Python urllib 可正常写入）。
-- 托管 Python：`C:/Users/Rainy/.workbuddy/binaries/python/versions/3.13.12/python.exe`
+- bash 子进程**没有 coreutils**（`mkdir`/`ls`/`head`/`tail`/`sed`/`awk` 均不可用），只能靠 `/usr/bin/{grep,wc,head}` 凑合。建目录请改用文件写入工具或 Python。
+- **PowerShell 的写操作会静默失败**（退出码 0 但文件不存在），不要依赖它做文件操作。
+- **curl 无法写入工作区**，报 `curl: (23) client returned ERROR on write`，`--retry` 也没用。改用 `scripts/fetch.py`（Python `urllib` 可正常写入）。
+- 写入工作区以外的盘符需要提权；`cmd.exe` 从 bash 调用会被安全策略拒绝。

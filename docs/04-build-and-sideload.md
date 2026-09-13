@@ -3,16 +3,18 @@
 ## 1. 完整流程
 
 ```bash
-PY="C:/Users/Rainy/.workbuddy/binaries/python/versions/3.13.12/python.exe"
-cd D:/wiki-kindle-dict
+# 在仓库根目录执行；PY 按你自己的环境替换（脚本只依赖 Python 标准库）
+PY=python
 
 # ① 编译器
 "$PY" scripts/fetch.py \
   https://github.com/ciscoriordan/kindling/releases/download/v0.45.1/kindling-cli-windows.exe \
   data/kindling.part
-# 校验：sha256 应为 1a361eef53e95a9ac14eb01cee3f54bdc84f798e0ebad06d2ab447fffee06893
-/c/Windows/System32/certutil.exe -hashfile "D:\wiki-kindle-dict\data\kindling.part" SHA256
-# 通过后重命名为 bin/kindling-cli.exe
+# 校验 SHA256 应为：
+#   1a361eef53e95a9ac14eb01cee3f54bdc84f798e0ebad06d2ab447fffee06893
+#   Windows:  certutil -hashfile data\kindling.part SHA256
+#   macOS/Linux: shasum -a 256 data/kindling.part
+# 通过后把 data/kindling.part 重命名为 bin/kindling-cli.exe
 
 # ② 数据（中文走 DBpedia 起步）
 "$PY" scripts/fetch.py \

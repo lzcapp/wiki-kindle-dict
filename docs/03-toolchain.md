@@ -72,15 +72,8 @@ ValueError: No plugin to handle input format: csv
 | bash 子进程 | **无 coreutils** | `mkdir` / `ls` / `head` / `tail` / `sed` / `awk` 全部 `command not found`；仅有 `/usr/bin/{grep,wc,head}` |
 | PowerShell | **写操作静默失败** | 命令返回退出码 0，但目标文件并不存在；不可用于文件操作 |
 | curl | **无法写入工作区** | `curl: (23) client returned ERROR on write`；`--retry` 也无济于事 |
-| Python（托管） | **正常** | `C:/Users/Rainy/.workbuddy/binaries/python/versions/3.13.12/python.exe`，可读写工作区，可联网 |
+| Python | **正常** | 可读写工作区、可联网，`scripts/fetch.py` 就是为此而写 |
 
 因此：**所有下载与文件生成都走 Python**。建目录用文件写入工具（它会自动创建父目录），或在 Python 里 `mkdir`。
 
-网络出口是 HTTP 代理（响应头可见 `HTTP/1.1 200 Connection Established`），Python 的 `urllib` 默认读取 `HTTPS_PROXY` 环境变量，无需额外配置。实测下载速率约 **350 KB/s**，所以：
-
-- 中文 DBpedia 摘要（137 MB）≈ 7 分钟
-- 英文 DBpedia 摘要（584 MB）≈ 30 分钟
-- zhwiki 全量 dump（3.2 GB）≈ 2.7 小时
-- enwiki 全量 dump（23.9 GB）≈ 20 小时
-
-**下载必须支持断点续传**，`scripts/fetch.py` 用 HTTP `Range` 实现，中断后重跑即可继续。
+网络出口若走 HTTP 代理，Python 的 `urllib` 默认读取 `HTTPS_PROXY` 环境变量，无需额外配置。下载速率完全取决于你的链路，**因此下载必须支持断点续传**——`scripts/fetch.py` 用 HTTP `Range` 实现，中断后重跑即可继续。

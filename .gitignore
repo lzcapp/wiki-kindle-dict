@@ -4,6 +4,15 @@ build/
 out/
 bin/
 
+# 工作区私有数据（含本机路径、下载习惯等），公开仓库不收录
+.workbuddy/
+
+# 下载器 / 未完成的下载
+*.xltd
+*.xltd.cfg
+*.crdownload
+*.part
+
 # 本机探测用的临时文件
 scripts/_probe.txt
 data/probe*.txt
