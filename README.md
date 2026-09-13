@@ -60,24 +60,60 @@
 
 被淘汰的方案（附实测证据）见 [docs/03-toolchain.md](docs/03-toolchain.md)：kindlegen（停止维护，Windows 版 32 位，大词典会崩）、calibre 9.13（**CSV→词典输入插件已被移除**）。
 
-## 4. 快速开始
+## 4. 快速开始（一条命令）
 
 ```bash
-# 在仓库根目录执行。PY 按你自己的环境替换（脚本只依赖 Python 标准库，3.10+ 均可）
+python scripts/wiki2kindle.py --lang zh
+```
+
+就这一条。它会依次完成：**准备编译器 → 找/取数据 → 解析 → 记录数预算与自动降级 → 打包 → 编译 → 验收**，
+最后打印六阶段日志与产物路径（默认 `out/wikipedia-<lang>.mobi`）。
+
+程序自动决策的事：
+
+| 决策 | 依据 |
+| --- | --- |
+| 用哪个解析器 | 按文件特征识别是官方 `pages-articles` dump 还是 DBpedia 摘要 |
+| 要不要降级 | 预估记录数超过 65,535 的安全线（默认 62,000）时，**先截断释义保条目数，再淘汰过短条目** |
+| 产物合不合格 | 编译后自动查 `rec_count`、`orth_index`、`exth[105]`，并确认日志里没有 `entries not found in text blob` |
+| 预估准不准 | 每次全量构建后用实测值自动校准系数（见 [docs/07](docs/07-automation.md)） |
+
+常用参数：
+
+```bash
+# 只处理一小部分，快速验证（分钟级）
+python scripts/wiki2kindle.py --lang zh --sample 3000
+
+# 本地没数据时自动下载
+python scripts/wiki2kindle.py --lang en --download
+
+# 指定数据文件 / 产物路径 / 多留些余量
+python scripts/wiki2kindle.py --lang zh --input data/zhwiki-20260901-pages-articles.xml.bz2 \
+    --out out/wikipedia-zh.mobi --max-records 60000
+
+# 忽略缓存全部重跑
+python scripts/wiki2kindle.py --lang zh --force
+```
+
+<details>
+<summary>分步手工执行（调试用）</summary>
+
+```bash
 PY=python
 
-# 1) 下载编译器和数据
 "$PY" scripts/fetch.py <kindling-cli-windows.exe URL> bin/kindling-cli.exe
 "$PY" scripts/fetch.py <short-abstracts_lang=zh.ttl.bz2 URL> data/short-abstracts_zh.ttl.bz2
 
-# 2) 解析维基摘要 → TSV
 "$PY" scripts/tsv_from_dbpedia.py data/short-abstracts_zh.ttl.bz2 --lang zh -o build/zh.tsv
+"$PY" scripts/tsv_from_dump.py data/zhwiki-pages-articles.xml.bz2 --lang zh \
+    -o build/zh.tsv --aliases-out build/zh-aliases.tsv
 
-# 3) 打包并编译
-"$PY" scripts/make_dict.py --tsv build/zh.tsv --lang zh \
-    --title "维基百科中文词典" --stamp 20220901 \
+"$PY" scripts/make_dict.py --tsv build/zh.tsv --aliases build/zh-aliases.tsv --lang zh \
+    --title "维基百科中文词典" --stamp 20260901 \
     --out build/zh --kindling bin/kindling-cli.exe --mobi out/wikipedia-zh.mobi
 ```
+
+</details>
 
 侧载与设备设置见 [docs/04-build-and-sideload.md](docs/04-build-and-sideload.md)。
 
@@ -91,9 +127,11 @@ PY=python
 │   ├── 02-kindle-dictionary-format.md  Kindle 词典格式规范（idx / OPF / 编译行为）
 │   ├── 03-toolchain.md              工具链选型与被淘汰方案的证据
 │   ├── 04-build-and-sideload.md     构建、验证、侧载、设备设置
-│   ├── 05-scaling-english-plan.md   规模测算与英文全量降级预案
-│   └── 06-verification.md           验证记录（冒烟测试 / 真机 / 规模实测）
+│   ├── 05-scaling-english-plan.md   规模测算与英文分卷方案
+│   ├── 06-verification.md           验证记录（冒烟测试 / 真机 / 规模实测）
+│   └── 07-automation.md             自动化工具设计（六阶段、自动决策、校准陷阱）
 ├── scripts/
+│   ├── wiki2kindle.py               **一条命令跑完全程的自动化入口**
 │   ├── fetch.py                     断点续传下载器
 │   ├── tsv_from_dbpedia.py          DBpedia short-abstracts → TSV
 │   ├── tsv_from_dump.py             维基官方 dump → TSV（含重定向异名）
