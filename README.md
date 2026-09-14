@@ -13,7 +13,7 @@
 | 数据获取 | ✅ 全部就位——DBpedia 中/英摘要 + zhwiki / enwiki 官方 dump |
 | **中文全量** | ✅ **已交付**：`out/wikipedia-zh.mobi`，**1,284,543 条 / 304 MB**，2026-09 内容，含 130 万条重定向异名（简繁与别名可查），记录占用 82.7% |
 | 英文全量 | ⛔ **单本结构上不可行**——690 万条约需 11 卷；分卷是否可用取决于 Kindle 是否回退查询其他词典，见 [docs/05](docs/05-scaling-english-plan.md) |
-| 真机验证 | ⏳ 待侧载到 Paperwhite 11/12 代确认 |
+| 真机验证 | ✅ **已侧载成功**（2026-09-14，Paperwhite 11/12 代）：出现在词典列表、选词能弹出释义，初步体验良好。细项（简繁异名命中、响应速度、多本词典回退）待细验，见 [docs/06](docs/06-verification.md) §7 |
 
 ---
 
@@ -63,18 +63,34 @@
 
 ## 4. 快速开始（一条命令）
 
+**输入一个 dump 文件，输出一本词典：**
+
 ```bash
-python scripts/wiki2kindle.py --lang zh
+python scripts/wiki2kindle.py data/zhwiki-20260901-pages-articles.xml.bz2
 ```
 
-就这一条。它会依次完成：**准备编译器 → 找/取数据 → 解析 → 归一别名 → 记录数预算与自动降级 → 打包 → 编译 → 验收**，
+它依次完成 **准备编译器 → 找/取数据 → 解析 → 归一别名 → 记录数预算与自动降级 → 打包 → 编译 → 验收**，
 最后打印七阶段日志与产物路径（默认 `out/wikipedia-<lang>.mobi`）。
+
+也可以不给文件，让它自己在 `data/` 里找：
+
+```bash
+python scripts/wiki2kindle.py            # 用 data/ 里的中文 dump
+```
+
+**输入可以是三种**（按文件名自动识别，语言也能从文件名自动推断，如 `zhwiki-…` → `zh`）：
+
+| 输入 | 说明 |
+| --- | --- |
+| 维基官方 `*-pages-articles.xml.bz2` | 最新最全，且**重定向可从同一文件抽取**，首选 |
+| DBpedia `short-abstracts_lang=xx.ttl.bz2` | 体量小、解析快，但是 2022 快照 |
+| 任意两列词表 `*.tsv` / `*.txt` | `词头 <TAB> 释义`，用于接入自己的词表 |
 
 程序自动决策的事：
 
 | 决策 | 依据 |
 | --- | --- |
-| 用哪个解析器 | 按文件特征识别是官方 `pages-articles` dump 还是 DBpedia 摘要 |
+| 用哪个解析器 | 按文件特征识别是官方 dump、DBpedia 摘要还是已解析词表 |
 | **查不到的字形怎么救** | ① **简繁字形**——MediaWiki 的简繁转换只在显示层做、不产生重定向，实测缺 90.6 万个字形；② **消歧义标题的基名**（`信義區 (臺北市)` → 补「信義區」）。都补成别名，多候选时靠**重定向人气**定主条目，人气不领先就跳过 |
 | 要不要降级 | 预估记录数超过 65,535 的安全线（默认 62,000）时，**先截断释义保条目数，再淘汰过短条目** |
 | 产物合不合格 | 编译后自动查 `rec_count`、`orth_index`、`exth[105]`，并确认日志里没有 `entries not found in text blob` |
@@ -84,17 +100,16 @@ python scripts/wiki2kindle.py --lang zh
 
 ```bash
 # 只处理一小部分，快速验证（分钟级）
-python scripts/wiki2kindle.py --lang zh --sample 3000
+python scripts/wiki2kindle.py --sample 3000
 
 # 本地没数据时自动下载
 python scripts/wiki2kindle.py --lang en --download
 
-# 指定数据文件 / 产物路径 / 多留些余量
-python scripts/wiki2kindle.py --lang zh --input data/zhwiki-20260901-pages-articles.xml.bz2 \
-    --out out/wikipedia-zh.mobi --max-records 60000
+# 指定输出路径 / 多留些余量
+python scripts/wiki2kindle.py data/zhwiki-....xml.bz2 -o out/zh.mobi --max-records 60000
 
 # 忽略缓存全部重跑
-python scripts/wiki2kindle.py --lang zh --force
+python scripts/wiki2kindle.py --force
 ```
 
 <details>
@@ -109,8 +124,10 @@ PY=python
 "$PY" scripts/tsv_from_dbpedia.py data/short-abstracts_zh.ttl.bz2 --lang zh -o build/zh.tsv
 "$PY" scripts/tsv_from_dump.py data/zhwiki-pages-articles.xml.bz2 --lang zh \
     -o build/zh.tsv --aliases-out build/zh-aliases.tsv
+"$PY" scripts/enrich_aliases.py --tsv build/zh.tsv --aliases build/zh-aliases.tsv \
+    -o build/zh-aliases-enriched.tsv
 
-"$PY" scripts/make_dict.py --tsv build/zh.tsv --aliases build/zh-aliases.tsv --lang zh \
+"$PY" scripts/make_dict.py --tsv build/zh.tsv --aliases build/zh-aliases-enriched.tsv --lang zh \
     --title "维基百科中文词典" --stamp 20260901 \
     --out build/zh --kindling bin/kindling-cli.exe --mobi out/wikipedia-zh.mobi
 ```

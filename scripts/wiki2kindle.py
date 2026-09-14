@@ -2,7 +2,12 @@
 # -*- coding: utf-8 -*-
 """dump → Kindle 词典：一条命令跑完全程。
 
-    python scripts/wiki2kindle.py --lang zh
+    python scripts/wiki2kindle.py <dump 文件>        # 最常用：输入 dump，输出 .mobi
+    python scripts/wiki2kindle.py                    # 不给输入，就在 data/ 里找中文 dump
+    python scripts/wiki2kindle.py words.tsv -o out/x.mobi   # 已解析的词表也行
+
+输入可以三种：维基官方 `pages-articles` dump、DBpedia short-abstracts 摘要、或两列词表 TSV。
+类型按文件名自动识别，语言也能从文件名自动推断（`zhwiki-…` → zh）。
 
 自动完成：准备编译器 → 找/取数据 → 解析 → 归一别名 → 记录数预算与自动降级 → 打包 → 编译 → 验收。
 
@@ -158,13 +163,27 @@ def find_source(data_dir: Path, lang: str, kind: str, explicit: Path | None) -> 
     return None
 
 
+def guess_lang(path: Path) -> str | None:
+    """从数据文件名猜语言：zhwiki-… → zh；short-abstracts_lang=zh → zh。"""
+    name = path.name.lower()
+    m = re.search(r"lang=([a-z]{2,3})", name)
+    if m:
+        return m.group(1)
+    m = re.match(r"([a-z]{2,3})wiki[-_]", name)
+    if m:
+        return m.group(1)
+    return None
+
+
 def detect_kind(path: Path) -> str:
     name = path.name.lower()
     if name.endswith(".ttl.bz2") or "short-abstracts" in name:
         return "dbpedia"
     if "pages-articles" in name or name.endswith(".xml.bz2"):
         return "dump"
-    sys.exit(f"无法识别数据源类型：{path.name}（用 --source 指定）")
+    if name.endswith((".tsv", ".txt", ".csv")):
+        return "tsv"
+    sys.exit(f"无法识别数据源类型：{path.name}（用 --source 指定，可选 dump / dbpedia / tsv）")
 
 
 def acquire_source(args, lang: str) -> tuple[Path, str]:
@@ -202,6 +221,12 @@ def acquire_source(args, lang: str) -> tuple[Path, str]:
 
 def parse_source(src: Path, kind: str, lang: str, work: Path, args) -> tuple[Path, Path | None]:
     stage("阶段 3/7  解析成词表（TSV）")
+    if kind == "tsv":
+        log(f"  输入已是词表，直接使用：{src.name}（{human(src.stat().st_size)}）")
+        rows = sum(1 for _ in src.open(encoding="utf-8"))
+        log(f"  词表 {rows:,} 条")
+        return src, None
+
     tsv = work / "source.tsv"
     aliases = work / "aliases.tsv" if kind == "dump" else None
     fp = f"{src.name}:{src.stat().st_size}:{kind}:{lang}:{args.min_len}:{args.sample}"
@@ -330,14 +355,14 @@ def apply_budget(tsv: Path, lang: str, max_records: int, args, calib: dict) -> d
         log("  在预算内，不降级")
         return report
 
-    if not args.force and (tsv.parent / "budget.tsv").exists():
+    if not args.force and (args.work / "budget.tsv").exists():
         log("  已有降级产物，跳过（--force 可强制重算）")
         return report
 
     # 第一刀：截断释义。条目数不变，先砍长尾。
     cut = args.max_len or 220
     kept, dropped = 0, 0
-    target = tsv.parent / "budget.tsv"
+    target = args.work / "budget.tsv"
     with tsv.open(encoding="utf-8") as fin, target.open("w", encoding="utf-8", newline="\n") as fout:
         for line in fin:
             parts = line.rstrip("\n").split("\t")
@@ -479,14 +504,23 @@ def verify(mobi: Path, kindling: Path, work: Path, lang: str, calib: dict,
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="dump → Kindle 词典，一条命令跑完全程",
+        prog="wiki2kindle",
+        description="维基 dump → Kindle 词典：一条命令跑完全程。\n"
+                    "给一个 dump 文件就输出一本词典；也可以只给语言，让它在 data/ 里自己找。",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="示例：\n  python scripts/wiki2kindle.py --lang zh\n"
-               "  python scripts/wiki2kindle.py --lang en --input data/xxx.ttl.bz2 --sample 20000\n",
+        epilog="示例：\n"
+               "  python scripts/wiki2kindle.py data/zhwiki-20260901-pages-articles.xml.bz2\n"
+               "  python scripts/wiki2kindle.py                    # 用 data/ 里找到的中文 dump\n"
+               "  python scripts/wiki2kindle.py enwiki-latest-pages-articles.xml.bz2 -o out/en.mobi\n"
+               "  python scripts/wiki2kindle.py --sample 3000      # 先快速试跑\n"
+               "  python scripts/wiki2kindle.py my-words.tsv       # 已解析的两列词表也行\n",
     )
-    ap.add_argument("--lang", default="zh", help="语言代码（决定 data/ 里找哪个 dump）")
-    ap.add_argument("--source", choices=["auto", "dump", "dbpedia"], default="auto")
-    ap.add_argument("--input", type=Path, default=None, help="直接指定数据文件")
+    ap.add_argument("input_pos", nargs="?", type=Path, default=None,
+                    help="数据文件：维基 dump / DBpedia 摘要 / 已解析的两列词表 TSV")
+    ap.add_argument("--input", dest="input", type=Path, default=None, help="同上，等价写法")
+    ap.add_argument("--lang", default=None,
+                    help="语言代码；给了输入文件时可省略（自动从文件名推断），否则默认 zh")
+    ap.add_argument("--source", choices=["auto", "dump", "dbpedia", "tsv"], default="auto")
     ap.add_argument("--data-dir", type=Path, default=ROOT / "data")
     ap.add_argument("--work", type=Path, default=ROOT / "build" / "auto")
     ap.add_argument("--out", type=Path, default=None)
@@ -506,7 +540,16 @@ def main() -> int:
     args = ap.parse_args()
 
     t0 = time.time()
+    args.input = args.input or args.input_pos
+    auto_lang = False
+    if not args.lang:
+        guessed = guess_lang(args.input) if args.input else None
+        args.lang = guessed or "zh"
+        auto_lang = guessed is not None
     lang = args.lang
+    log(f"语言：{lang}" + ("（从文件名自动推断）" if auto_lang else ""))
+    if args.input and not args.input.exists():
+        sys.exit(f"找不到输入文件：{args.input}")
     calib = load_calibration()
 
     kindling = ensure_kindling(args.kindling, args.download)
