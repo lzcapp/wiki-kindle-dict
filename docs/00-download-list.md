@@ -58,6 +58,30 @@ SHA256  1a361eef53e95a9ac14eb01cee3f54bdc84f798e0ebad06d2ab447fffee06893
 
 ---
 
+## P3 · 英文的「重要度」筛选（建议，合计 2.8 GB）
+
+英文要从 598 万条砍到约 100 万条，**砍得准不准直接决定这本词典好不好用**。
+下面两个文件用来计算**跨语言链接数**——一个条目有多少个其他语言版本，是最强的显著度信号。
+（一个条目有 30 种语言版本 ≈ 真正的显著条目；只有 1 种的，多半是冷门物种/赛事/小地名，正是该砍掉的。）
+
+| 文件 | 大小 | 保存为 |
+| --- | --- | --- |
+| https://dumps.wikimedia.org/enwiki/latest/enwiki-latest-langlinks.sql.gz | 582 MB | `data/enwiki-latest-langlinks.sql.gz` |
+| https://dumps.wikimedia.org/enwiki/latest/enwiki-latest-page.sql.gz | 2.2 GB | `data/enwiki-latest-page.sql.gz` |
+
+`langlinks` 给的是「page_id → 其他语言标题」，`page` 给的是「page_id → 标题」，
+**两者 join 才能得到「英维标题 → 有多少个语言版本」**，所以两个都要。
+
+只用释义长度筛也能跑（零成本，见 [docs/05](05-scaling-english-plan.md) §3 的对照表），
+但选出来的 100 万条会明显不如按人气选。
+
+## 暂时不要下
+
+| 文件 | 原因 |
+| --- | --- |
+| `other/pageviews/`（页面访问量） | 一个月几十 GB，信号质量不比跨语言链接数好多少 |
+| `enwiki-latest-pagelinks.sql.gz`（6.6 GB） | 入链数可作补充信号，但边际收益低，先不上 |
+
 ## 不需要下
 
 | 文件 | 原因 |
