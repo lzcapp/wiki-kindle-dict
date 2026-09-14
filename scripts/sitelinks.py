@@ -96,7 +96,10 @@ def emit_titles(page_path: Path, counts: Counter, out_path: Path, min_count: int
             c = counts.get(int(pid))
             if not c or c < min_count:
                 continue
-            out.write(f"{unesc(title)}\t{c}\n")
+            # 重要：MediaWiki 的 page_title 存的是**数据库键形式**——空格写成下划线
+            # （`Autism_spectrum` 而非 `Autism spectrum`）。不还原就跟词表标题匹配不上，
+            # 实测匹配率只有 8%（踩过）。下划线在标题里与空格等价，直接全替换即可。
+            out.write(f"{unesc(title).replace('_', ' ')}\t{c}\n")
             written += 1
     sys.stderr.write("\r")
     print(f"  page: 扫描 {pages:,} 行，输出 {written:,} 条（ns0 且语言数≥{min_count}）"

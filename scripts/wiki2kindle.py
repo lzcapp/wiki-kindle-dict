@@ -602,7 +602,8 @@ def main() -> int:
     ap.add_argument("--source", choices=["auto", "dump", "dbpedia", "tsv"], default="auto")
     ap.add_argument("--data-dir", type=Path, default=ROOT / "data")
     ap.add_argument("--work", type=Path, default=ROOT / "build" / "auto")
-    ap.add_argument("--out", type=Path, default=None)
+    ap.add_argument("-o", "--out", type=Path, default=None,
+                    help="产物路径（默认 out/wikipedia-<lang>.mobi）")
     ap.add_argument("--kindling", type=Path, default=ROOT / "bin" / "kindling-cli.exe")
     ap.add_argument("--title", default=None)
     ap.add_argument("--source-label", default=None)
