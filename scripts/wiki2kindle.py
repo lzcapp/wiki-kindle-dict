@@ -301,11 +301,17 @@ def enrich_aliases_stage(tsv: Path, aliases: Path | None, work: Path, args) -> P
 # ---------- 阶段 4.5：按显著度筛条目 ----------
 
 def filter_by_importance(tsv: Path, aliases: Path | None, importance: Path,
-                         top: int, work: Path) -> tuple[Path, Path | None]:
+                         top: int, work: Path, max_key_len: int = 0) -> tuple[Path, Path | None]:
     """按「跨语言链接数」等显著度分数保留 Top N 条。
 
     用**分数直方图**定阈值，而不是排序全部条目——内存只跟分数取值范围有关。
     阈值上的并列会全部保留（可能略超 N），超出的部分由记录数预算阶段兜底。
+
+    `max_key_len`：丢弃超过该长度的词头与别名。这不是"顺手优化"，而是**必需**——
+    见 check_index_records()：键一多，词典的根索引会超过 16 位 IDXT 偏移，
+    设备读不到整张索引表，**整本词典查不到词**。实测英文：不限制时键 468 万、
+    根索引偏移 141,138（溢出）；限制到 20 字符后键 306 万、偏移 48,337（安全）。
+    超长标题本来就查不到（Kindle 单次查词约 4 个词封顶），所以不损失实用内容。
 
     同时会把异名表里指向被淘汰条目的别名一并剔除，避免留下悬空别名。
     """
@@ -346,16 +352,22 @@ def filter_by_importance(tsv: Path, aliases: Path | None, importance: Path,
 
     out_tsv = work / "source-filtered.tsv"
     kept: set[str] = set()
-    n = 0
+    n = dropped_long = 0
     with tsv.open(encoding="utf-8") as fin, out_tsv.open("w", encoding="utf-8", newline="\n") as fout:
         for line in fin:
             if "\t" not in line:
                 continue
             head = line.split("\t", 1)[0]
-            if scores.get(head, 0) >= threshold:
-                fout.write(line)
-                kept.add(head)
-                n += 1
+            if scores.get(head, 0) < threshold:
+                continue
+            if max_key_len and len(head) > max_key_len:
+                dropped_long += 1
+                continue
+            fout.write(line)
+            kept.add(head)
+            n += 1
+    if max_key_len:
+        log(f"  丢弃超长词头 {dropped_long:,} 条（>{max_key_len} 字符）")
     log(f"  写出 {n:,} 条 → {out_tsv.name}（{human(out_tsv.stat().st_size)}）")
 
     out_alias = None
@@ -367,10 +379,14 @@ def filter_by_importance(tsv: Path, aliases: Path | None, importance: Path,
             for line in fin:
                 if "\t" not in line:
                     continue
-                if line.rstrip("\n").rsplit("\t", 1)[1] in kept:
-                    fout.write(line)
-                    a += 1
-        log(f"  异名表同步过滤 → {a:,} 条（剔掉指向被淘汰条目的）")
+                alias, target = line.rstrip("\n").rsplit("\t", 1)
+                if target not in kept:
+                    continue
+                if max_key_len and len(alias) > max_key_len:
+                    continue
+                fout.write(line)
+                a += 1
+        log(f"  异名表同步过滤 → {a:,} 条（剔掉指向被淘汰条目的、以及超长的）")
     return out_tsv, out_alias
 
 
@@ -522,6 +538,39 @@ def pack_and_build(tsv: Path, aliases: Path | None, lang: str, work: Path,
 
 # ---------- 阶段 6：验收 ----------
 
+def check_index_records(kindling: Path, mobi: Path) -> tuple[bool, str]:
+    """检查索引记录有没有超过 MOBI 的 64 KB 上限。
+
+    ⚠️ 这条是**用血换来的**：INDX 记录里 `idxt_offset` 是 **16 位**（上限 65,535）。
+    词典的**根索引**要为每个叶子索引存一条，叶子数 = 键数 ÷ 每叶约 1400 个键。
+    键一多（比如英文 104 万词头 + 397 万别名 = 468 万键 → 3299 个叶子），
+    根索引就会长到 190 KB、偏移量溢出 16 位 —— **设备读不到根索引表，整本词典查不到词**。
+    而 kindling 自己的 `lookup`/`dump` 能正确处理 >64KB，所以**只有真机会暴露**。
+    """
+    r = run([kindling, "dump", mobi], capture_output=True, text=True,
+            encoding="utf-8", errors="replace")
+    fields: dict[str, dict[str, str]] = {}
+    for m in re.finditer(r"^indx\[(\d+)\]\.(\w+)\s*=\s*(\S+)", r.stdout or "", re.M):
+        fields.setdefault(m.group(1), {})[m.group(2)] = m.group(3)
+    worst_len = worst_off = 0
+    bad = 0
+    for f in fields.values():
+        try:
+            length = int(f.get("length", 0))
+            offset = int(f.get("idxt_offset", 0))
+        except ValueError:
+            continue
+        worst_len = max(worst_len, length)
+        worst_off = max(worst_off, offset)
+        # 真正的红线是 IDXT 偏移：它是 16 位，溢出后设备读不到该索引表。
+        # 记录本身可以超过 64 KB（只要索引表落在 64 KB 以内），所以不拿长度当判据。
+        if offset > 65535:
+            bad += 1
+    detail = (f"{len(fields)} 条索引记录，IDXT 偏移最大 {worst_off:,}"
+              f"（上限 65,535），记录最大 {worst_len:,} B，溢出 {bad} 条")
+    return bad == 0, detail
+
+
 def verify(mobi: Path, kindling: Path, work: Path, lang: str, calib: dict,
            divisor: float, tsv: Path, sample: int = 0) -> bool:
     stage("阶段 7/7  验收")
@@ -542,6 +591,11 @@ def verify(mobi: Path, kindling: Path, work: Path, lang: str, calib: dict,
     not_found = re.findall(r"(\d+) / \d+ entries not found in text blob", build_log)
 
     ok = True
+    idx_ok, idx_detail = check_index_records(kindling, mobi)
+    # 构建日志里的 P1 警告也要当失败——曾经有一条 64KB 溢出的警告被放过去了，
+    # 结果发布出去的英文版在真机上查不到词。
+    p1 = re.search(r"(\d+) P1 warnings?", build_log)
+    p1_count = int(p1.group(1)) if p1 else 0
     checks = [
         ("正文记录数在 65535 以内",
          rec_count is not None and int(rec_count) <= PALMDB_RECORD_LIMIT, rec_count),
@@ -549,6 +603,8 @@ def verify(mobi: Path, kindling: Path, work: Path, lang: str, calib: dict,
         ("EXTH 识别为词典", exth is not None and "Dictionar" in exth.group(1),
          exth.group(1) if exth else None),
         ("词头定位无失败", not not_found, "有！" if not_found else "通过"),
+        ("索引记录未超 64KB（否则设备读不到）", idx_ok, idx_detail),
+        ("MOBI 自检无 P1 警告", p1_count == 0, f"{p1_count} 条"),
     ]
     for name, passed, value in checks:
         log(f"  [{'OK ' if passed else '失败'}] {name}（{value}）")
@@ -617,6 +673,8 @@ def main() -> int:
                     help="显著度表（标题 <TAB> 分数，如跨语言链接数，见 scripts/sitelinks.py）")
     ap.add_argument("--top", type=int, default=0,
                     help="配合 --importance：只保留分数最高的 N 条（英文单本装不下时用）")
+    ap.add_argument("--max-key-len", type=int, default=0,
+                    help="丢弃超过该长度的词头与别名。英文实测必须限制（>20 会让根索引 IDXT 偏移溢出，整本查不到词）")
     ap.add_argument("--parse-only", action="store_true",
                     help="只跑到解析+归一就停，不构建（大 dump 先备好词表用）")
     ap.add_argument("--no-variants", action="store_true",
@@ -646,7 +704,8 @@ def main() -> int:
     aliases = enrich_aliases_stage(tsv, aliases, args.work, args)
 
     if args.importance and args.top:
-        tsv, aliases = filter_by_importance(tsv, aliases, args.importance, args.top, args.work)
+        tsv, aliases = filter_by_importance(tsv, aliases, args.importance, args.top,
+                                            args.work, args.max_key_len)
 
     if args.parse_only:
         log("\n只跑了前 4 个阶段（--parse-only），词表与异名表已就绪：")
