@@ -25,6 +25,7 @@ python scripts/wiki2kindle.py --lang zh
 | 2 准备数据 | 在 `data/` 按语言找 dump 或摘要 | 给了输入文件就直接用；`--source auto` 时优先官方 dump；都没有则提示加 `--download` |
 | 3 解析成词表 | 按文件特征选解析器 | `pages-articles`/`*.xml.bz2` → dump；`*.ttl.bz2`/`short-abstracts` → DBpedia；`*.tsv`/`*.txt` → 已解析词表（直接使用） |
 | 4 归一别名 | 给消歧义标题补基名别名 | 见下节；失败则退回未归一异名表，不阻断 |
+| 4.5 按显著度筛条目 | 可选：按跨语言链接数保留 Top N | 仅在给了 `--importance` + `--top` 时执行；同时剔除指向被淘汰条目的悬空别名 |
 | 5 记录数预算 | 预估正文记录数 | 超线自动降级，两步走（见下下节） |
 | 6 打包并编译 | 调 `make_dict.py` 再调 `kindling build` | 打包阶段含正文良构性自检，不合格直接中止 |
 | 7 验收 | 解析 `kindling dump` 与构建日志 | 四项检查，任一项不过则退出码 1 |

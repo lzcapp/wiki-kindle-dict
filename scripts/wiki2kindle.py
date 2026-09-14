@@ -34,6 +34,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from collections import Counter
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -285,6 +286,8 @@ def enrich_aliases_stage(tsv: Path, aliases: Path | None, work: Path, args) -> P
     cmd = [sys.executable, HERE / "enrich_aliases.py", "--tsv", tsv, "--out", out]
     if aliases and aliases.exists():
         cmd += ["--aliases", aliases]
+    if getattr(args, "no_variants", False):
+        cmd += ["--no-variants"]
     r = run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     for line in (r.stdout or "").strip().splitlines():
         log("  " + line)
@@ -293,6 +296,82 @@ def enrich_aliases_stage(tsv: Path, aliases: Path | None, work: Path, args) -> P
         log("  归一失败，退回未归一的异名表")
         return aliases
     return out
+
+
+# ---------- 阶段 4.5：按显著度筛条目 ----------
+
+def filter_by_importance(tsv: Path, aliases: Path | None, importance: Path,
+                         top: int, work: Path) -> tuple[Path, Path | None]:
+    """按「跨语言链接数」等显著度分数保留 Top N 条。
+
+    用**分数直方图**定阈值，而不是排序全部条目——内存只跟分数取值范围有关。
+    阈值上的并列会全部保留（可能略超 N），超出的部分由记录数预算阶段兜底。
+
+    同时会把异名表里指向被淘汰条目的别名一并剔除，避免留下悬空别名。
+    """
+    stage(f"阶段 4.5/7  按显著度筛条目（保留 Top {top:,}）")
+    scores: dict[str, int] = {}
+    with importance.open(encoding="utf-8") as fh:
+        for line in fh:
+            if "\t" not in line:
+                continue
+            title, score = line.rstrip("\n").rsplit("\t", 1)
+            try:
+                scores[title] = int(score)
+            except ValueError:
+                continue
+    log(f"  显著度表 {len(scores):,} 条（来自 {importance.name}）")
+
+    hist: Counter = Counter()
+    total = 0
+    with tsv.open(encoding="utf-8") as fh:
+        for line in fh:
+            if "\t" in line:
+                hist[scores.get(line.split("\t", 1)[0], 0)] += 1
+                total += 1
+
+    cum = 0
+    threshold = 0
+    for s in sorted(hist, reverse=True):
+        if s == 0:
+            continue
+        if cum + hist[s] > top:
+            threshold = s + 1
+            break
+        cum += hist[s]
+        threshold = s
+    log(f"  共 {total:,} 条，分数分布前几档：" +
+        " ".join(f"{s}→{hist[s]:,}" for s in sorted(hist, reverse=True)[:5] if s))
+    log(f"  取分数 ≥ {threshold} → 保留约 {sum(v for s, v in hist.items() if s >= threshold):,} 条")
+
+    out_tsv = work / "source-filtered.tsv"
+    kept: set[str] = set()
+    n = 0
+    with tsv.open(encoding="utf-8") as fin, out_tsv.open("w", encoding="utf-8", newline="\n") as fout:
+        for line in fin:
+            if "\t" not in line:
+                continue
+            head = line.split("\t", 1)[0]
+            if scores.get(head, 0) >= threshold:
+                fout.write(line)
+                kept.add(head)
+                n += 1
+    log(f"  写出 {n:,} 条 → {out_tsv.name}（{human(out_tsv.stat().st_size)}）")
+
+    out_alias = None
+    if aliases and aliases.exists():
+        out_alias = work / "aliases-filtered.tsv"
+        a = 0
+        with aliases.open(encoding="utf-8") as fin, \
+                out_alias.open("w", encoding="utf-8", newline="\n") as fout:
+            for line in fin:
+                if "\t" not in line:
+                    continue
+                if line.rstrip("\n").rsplit("\t", 1)[1] in kept:
+                    fout.write(line)
+                    a += 1
+        log(f"  异名表同步过滤 → {a:,} 条（剔掉指向被淘汰条目的）")
+    return out_tsv, out_alias
 
 
 # ---------- 阶段 5：记录数预算 ----------
@@ -533,8 +612,16 @@ def main() -> int:
     ap.add_argument("--max-len", type=int, default=0, help="释义截断长度（0 = 自动）")
     ap.add_argument("--max-records", type=int, default=DEFAULT_MAX_RECORDS)
     ap.add_argument("--sample", type=int, default=0, help="只处理前 N 页（调试用）")
+    ap.add_argument("--importance", type=Path, default=None,
+                    help="显著度表（标题 <TAB> 分数，如跨语言链接数，见 scripts/sitelinks.py）")
+    ap.add_argument("--top", type=int, default=0,
+                    help="配合 --importance：只保留分数最高的 N 条（英文单本装不下时用）")
+    ap.add_argument("--parse-only", action="store_true",
+                    help="只跑到解析+归一就停，不构建（大 dump 先备好词表用）")
+    ap.add_argument("--no-variants", action="store_true",
+                    help="归一阶段跳过简繁字形（非中文语境用不上）")
     ap.add_argument("--no-enrich", action="store_true",
-                    help="跳过归一别名（不给消歧义标题补基名别名）")
+                    help="跳过整个归一阶段（不补任何别名）")
     ap.add_argument("--download", action="store_true", help="本地无数据时自动下载")
     ap.add_argument("--force", action="store_true", help="忽略缓存，全部重跑")
     args = ap.parse_args()
@@ -556,6 +643,17 @@ def main() -> int:
     src, kind = acquire_source(args, lang)
     tsv, aliases = parse_source(src, kind, lang, args.work, args)
     aliases = enrich_aliases_stage(tsv, aliases, args.work, args)
+
+    if args.importance and args.top:
+        tsv, aliases = filter_by_importance(tsv, aliases, args.importance, args.top, args.work)
+
+    if args.parse_only:
+        log("\n只跑了前 4 个阶段（--parse-only），词表与异名表已就绪：")
+        log(f"  词表   {tsv}（{human(tsv.stat().st_size)}）")
+        if aliases:
+            log(f"  异名表 {aliases}（{human(aliases.stat().st_size)}）")
+        log("  下一步可用这两个文件直接构建，或先做重要度筛选。")
+        return 0
 
     report = apply_budget(tsv, lang, args.max_records, args, calib)
     if report.get("tsv"):
