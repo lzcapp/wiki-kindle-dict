@@ -4,6 +4,18 @@
 
 目标产物：**中文一本 + 英文一本**，都是全量收录、MOBI 格式、Paperwhite 11/12 代可用。
 
+## 下载
+
+已发布的成品（含安装步骤与已知限制）：
+**[Releases · v1](https://github.com/lzcapp/wiki-kindle-dict/releases/tag/v1)**
+
+| 文件 | 词条 | 体积 |
+| --- | --- | --- |
+| [wikipedia-zh.mobi](https://github.com/lzcapp/wiki-kindle-dict/releases/download/v1/wikipedia-zh.mobi) | 1,284,543 条 | 322 MB |
+| [wikipedia-en.mobi](https://github.com/lzcapp/wiki-kindle-dict/releases/download/v1/wikipedia-en.mobi) | 1,038,531 条 | 299 MB |
+
+想自己做一本（别的语言、别的规模），直接用下面的工具链。
+
 ## 当前状态
 
 | 环节 | 状态 |
