@@ -67,14 +67,15 @@
 python scripts/wiki2kindle.py --lang zh
 ```
 
-就这一条。它会依次完成：**准备编译器 → 找/取数据 → 解析 → 记录数预算与自动降级 → 打包 → 编译 → 验收**，
-最后打印六阶段日志与产物路径（默认 `out/wikipedia-<lang>.mobi`）。
+就这一条。它会依次完成：**准备编译器 → 找/取数据 → 解析 → 归一别名 → 记录数预算与自动降级 → 打包 → 编译 → 验收**，
+最后打印七阶段日志与产物路径（默认 `out/wikipedia-<lang>.mobi`）。
 
 程序自动决策的事：
 
 | 决策 | 依据 |
 | --- | --- |
 | 用哪个解析器 | 按文件特征识别是官方 `pages-articles` dump 还是 DBpedia 摘要 |
+| **查不到的标题怎么救** | 给 `X (消歧义后缀)` 这类标题补基名别名（读者选中的是基名）；多候选时靠**重定向人气**定主条目，人气不领先就跳过 |
 | 要不要降级 | 预估记录数超过 65,535 的安全线（默认 62,000）时，**先截断释义保条目数，再淘汰过短条目** |
 | 产物合不合格 | 编译后自动查 `rec_count`、`orth_index`、`exth[105]`，并确认日志里没有 `entries not found in text blob` |
 | 预估准不准 | 每次全量构建后用实测值自动校准系数（见 [docs/07](docs/07-automation.md)） |
@@ -136,6 +137,7 @@ PY=python
 │   ├── fetch.py                     断点续传下载器
 │   ├── tsv_from_dbpedia.py          DBpedia short-abstracts → TSV
 │   ├── tsv_from_dump.py             维基官方 dump → TSV（含重定向异名）
+│   ├── enrich_aliases.py            归一：消歧义标题的基名补成别名
 │   └── make_dict.py                 TSV → Kindle 词典工程 → .mobi
 ├── examples/sample.tsv              最小样例词表
 ├── data/                            原始数据（不入版本库）

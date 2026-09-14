@@ -4,7 +4,7 @@
 
     python scripts/wiki2kindle.py --lang zh
 
-自动完成：准备编译器 → 找/取数据 → 解析 → 记录数预算与自动降级 → 打包 → 编译 → 验收。
+自动完成：准备编译器 → 找/取数据 → 解析 → 归一别名 → 记录数预算与自动降级 → 打包 → 编译 → 验收。
 
 设计要点（都是踩过坑之后定下来的）：
 
@@ -124,7 +124,7 @@ def download(url: str, dest: Path) -> None:
 # ---------- 阶段 1：编译器 ----------
 
 def ensure_kindling(path: Path, allow_download: bool) -> Path:
-    stage("阶段 1/6  准备编译器（kindling）")
+    stage("阶段 1/7  准备编译器（kindling）")
     if path.exists() and path.stat().st_size > 1_000_000:
         log(f"  已就位 {path}（{human(path.stat().st_size)}）")
         return path
@@ -168,7 +168,7 @@ def detect_kind(path: Path) -> str:
 
 
 def acquire_source(args, lang: str) -> tuple[Path, str]:
-    stage("阶段 2/6  准备数据")
+    stage("阶段 2/7  准备数据")
     kind = args.source
     if kind == "auto":
         for k in ("dump", "dbpedia"):
@@ -201,7 +201,7 @@ def acquire_source(args, lang: str) -> tuple[Path, str]:
 # ---------- 阶段 3：解析 ----------
 
 def parse_source(src: Path, kind: str, lang: str, work: Path, args) -> tuple[Path, Path | None]:
-    stage("阶段 3/6  解析成词表（TSV）")
+    stage("阶段 3/7  解析成词表（TSV）")
     tsv = work / "source.tsv"
     aliases = work / "aliases.tsv" if kind == "dump" else None
     fp = f"{src.name}:{src.stat().st_size}:{kind}:{lang}:{args.min_len}:{args.sample}"
@@ -240,7 +240,37 @@ def parse_source(src: Path, kind: str, lang: str, work: Path, args) -> tuple[Pat
     return tsv, aliases
 
 
-# ---------- 阶段 4：记录数预算 ----------
+# ---------- 阶段 4：归一别名 ----------
+
+def enrich_aliases_stage(tsv: Path, aliases: Path | None, work: Path, args) -> Path | None:
+    """把 `X (消歧义后缀)` 的基名补成别名。
+
+    读者在正文里选中的是「信義區」，而词头是「信義區 (臺北市)」→ 直接查不到。
+    补别名可修复这类漏失，且**别名只进索引、不占正文记录预算**，是零成本增益。
+    多候选时靠「重定向人气」定主条目，人气不领先宁可跳过（避免误指）。
+    """
+    stage("阶段 4/7  归一别名（消歧义后缀 → 基名）")
+    if args.no_enrich:
+        log("  已用 --no-enrich 跳过")
+        return aliases
+    out = work / "aliases-enriched.tsv"
+    if out.exists() and not args.force:
+        log(f"  已有归一产物，跳过（{human(out.stat().st_size)}；--force 可重跑）")
+        return out
+    cmd = [sys.executable, HERE / "enrich_aliases.py", "--tsv", tsv, "--out", out]
+    if aliases and aliases.exists():
+        cmd += ["--aliases", aliases]
+    r = run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    for line in (r.stdout or "").strip().splitlines():
+        log("  " + line)
+    if r.returncode != 0:
+        log((r.stderr or "")[-800:])
+        log("  归一失败，退回未归一的异名表")
+        return aliases
+    return out
+
+
+# ---------- 阶段 5：记录数预算 ----------
 
 def load_calibration() -> dict:
     if CALIBRATION.exists():
@@ -288,7 +318,7 @@ def trim_definition(definition: str, max_len: int) -> str:
 
 def apply_budget(tsv: Path, lang: str, max_records: int, args, calib: dict) -> dict:
     """超预算就自动降级：先截断释义（保条目数），再淘汰过短条目。返回决策报告。"""
-    stage("阶段 4/6  记录数预算")
+    stage("阶段 5/7  记录数预算")
     divisor = divisor_for(lang, calib, tsv.stat().st_size)
     rec = project_records(tsv, divisor)
     report = {"divisor": divisor, "projected": rec, "max_records": max_records,
@@ -351,7 +381,7 @@ def apply_budget(tsv: Path, lang: str, max_records: int, args, calib: dict) -> d
 
 def pack_and_build(tsv: Path, aliases: Path | None, lang: str, work: Path,
                    kindling: Path, args) -> Path:
-    stage("阶段 5/6  打包并编译")
+    stage("阶段 6/7  打包并编译")
     tree = work / "dict"
     mobi = args.out or (ROOT / "out" / f"wikipedia-{lang}.mobi")
     mobi.parent.mkdir(parents=True, exist_ok=True)
@@ -390,7 +420,7 @@ def pack_and_build(tsv: Path, aliases: Path | None, lang: str, work: Path,
 
 def verify(mobi: Path, kindling: Path, work: Path, lang: str, calib: dict,
            divisor: float, tsv: Path, sample: int = 0) -> bool:
-    stage("阶段 6/6  验收")
+    stage("阶段 7/7  验收")
     r = run([kindling, "dump", mobi], capture_output=True, text=True,
             encoding="utf-8", errors="replace")
     dump = r.stdout or ""
@@ -469,6 +499,8 @@ def main() -> int:
     ap.add_argument("--max-len", type=int, default=0, help="释义截断长度（0 = 自动）")
     ap.add_argument("--max-records", type=int, default=DEFAULT_MAX_RECORDS)
     ap.add_argument("--sample", type=int, default=0, help="只处理前 N 页（调试用）")
+    ap.add_argument("--no-enrich", action="store_true",
+                    help="跳过归一别名（不给消歧义标题补基名别名）")
     ap.add_argument("--download", action="store_true", help="本地无数据时自动下载")
     ap.add_argument("--force", action="store_true", help="忽略缓存，全部重跑")
     args = ap.parse_args()
@@ -480,6 +512,7 @@ def main() -> int:
     kindling = ensure_kindling(args.kindling, args.download)
     src, kind = acquire_source(args, lang)
     tsv, aliases = parse_source(src, kind, lang, args.work, args)
+    aliases = enrich_aliases_stage(tsv, aliases, args.work, args)
 
     report = apply_budget(tsv, lang, args.max_records, args, calib)
     if report.get("tsv"):
