@@ -174,7 +174,13 @@ PY=python
 
 ## 7. 许可与署名
 
-维基百科内容采用 **CC BY-SA 4.0**。生成的词典内必须带署名页（`make_dict.py` 会自动生成 `usage.html`），再分发时须保留署名并以相同协议共享。
+本仓库**代码**采用 [MIT 许可](LICENSE)。
+
+**生成的词典数据必须在 CC BY-SA 4.0 下分发**——维基百科内容的使用条款决定的，不是可选项。
+生成的词典内已含署名页（`make_dict.py` 自动写入 `usage.html`），再分发时须保留该页并以相同协议共享。
+完整说明与署名要求见 [LICENSE-DATA.md](LICENSE-DATA.md)。
+
+已发布的成品（含下载与安装说明）见 [RELEASE_NOTES.md](RELEASE_NOTES.md)。
 
 ## 8. 本环境踩过的坑
 
