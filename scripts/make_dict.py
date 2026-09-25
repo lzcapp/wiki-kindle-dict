@@ -4,7 +4,8 @@
 
 TSV 列（制表符分隔，行首 # 为注释）：
   1 词头 headword   （必填）
-  2 释义 definition （必填，纯文本）
+  2 释义 definition （必填，纯文本；多义项用 ASCII 单元分隔符 \\x1f 连接，
+                      会渲染成编号段落，见 tsv_from_dump.py 的消歧义处理）
   3 异名 aliases    （选填，用 ; 分隔）—— 写进 idx:iform，用于简繁/别名/重定向查词
 
 用法：
@@ -23,6 +24,11 @@ from collections import defaultdict
 from pathlib import Path
 
 MAX_ALIASES_PER_ENTRY = 64
+
+# 多义释义的义项分隔符（ASCII 单元分隔符 US）。来自 tsv_from_dump.py 的消歧义页：
+# `释义1\x1f释义2\x1f…`，这里切分后逐条渲染成编号段落。
+# 注意：clean() 会把它当非法控制字符删掉，所以必须先切分再 clean。
+SENSE_SEP = "\x1f"
 
 XML_ILLEGAL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufffe\uffff]")
 WS = re.compile(r"\s+")
@@ -50,7 +56,10 @@ def esc(text: str) -> str:
 
 
 def read_tsv(path: Path):
-    """产出 (headword, definition, [alias, ...])，自动去重词头。"""
+    """产出 (headword, [sense, ...], [alias, ...])，自动去重词头。
+
+    释义先按 SENSE_SEP 切义项，再逐条 clean——单义词条得到只有一个元素的列表。
+    """
     seen: set[str] = set()
     with path.open("r", encoding="utf-8-sig") as fh:
         for lineno, raw in enumerate(fh, 1):
@@ -62,8 +71,8 @@ def read_tsv(path: Path):
                 print(f"  跳过第 {lineno} 行：列数不足", file=sys.stderr)
                 continue
             head = clean(parts[0])
-            definition = clean(parts[1])
-            if not head or not definition:
+            senses = [s for s in (clean(x) for x in parts[1].split(SENSE_SEP)) if s]
+            if not head or not senses:
                 continue
             if head in seen:
                 continue
@@ -74,21 +83,28 @@ def read_tsv(path: Path):
                     alias = clean(alias)
                     if alias and alias != head and alias not in aliases:
                         aliases.append(alias)
-            yield head, definition, aliases
+            yield head, senses, aliases
 
 
-def entry_xhtml(head: str, definition: str, aliases: list[str]) -> str:
+def entry_xhtml(head: str, senses: list[str], aliases: list[str]) -> str:
     infl = ""
     if aliases:
         infl = "<idx:infl>" + "".join(
             f'<idx:iform value="{esc(a)}"/>' for a in aliases
         ) + "</idx:infl>"
+    # 单义项保持原样；多义项（消歧义页）每条一个编号段落，像普通词典一样分行。
+    if len(senses) == 1:
+        body = f"<p>{esc(senses[0])}</p>"
+    else:
+        body = "".join(
+            f"<p><b>{i}.</b> {esc(sense)}</p>" for i, sense in enumerate(senses, 1)
+        )
     # 词头必须紧跟 idx:orth 且由 <b> 包裹，前面不要插入任何锚点，
     # 否则 kindling 无法定位词条起点（会报 "entries not found in text blob"）。
     return (
         '<idx:entry name="default" scriptable="yes">'
         f'<idx:orth value="{esc(head)}"><b>{esc(head)}</b>{infl}</idx:orth>'
-        f"<p>{esc(definition)}</p>"
+        f"{body}"
         "</idx:entry><mbp:pagebreak/>\n"
     )
 
@@ -115,8 +131,8 @@ def write_content(build: Path, lang: str, title: str, rows, chunk: int) -> list[
         part += 1
         buf = [header]
 
-    for head, definition, aliases in rows:
-        buf.append(entry_xhtml(head, definition, aliases))
+    for head, senses, aliases in rows:
+        buf.append(entry_xhtml(head, senses, aliases))
         count += 1
         if count % chunk == 0:
             flush()
@@ -242,12 +258,12 @@ def main() -> int:
                     alias_map[target].append(alias)
         merged = []
         total = 0
-        for head, definition, aliases in rows:
+        for head, senses, aliases in rows:
             for extra in alias_map.get(head, []):
                 if extra not in aliases and len(aliases) < MAX_ALIASES_PER_ENTRY:
                     aliases.append(extra)
                     total += 1
-            merged.append((head, definition, aliases))
+            merged.append((head, senses, aliases))
         rows = merged
         print(f"并入异名 {total} 条（单条上限 {MAX_ALIASES_PER_ENTRY}）")
     rows.sort(key=lambda r: r[0])

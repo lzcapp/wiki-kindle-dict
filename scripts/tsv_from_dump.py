@@ -6,6 +6,9 @@
 顺便从 dump 里直接抽出重定向页，得到「异名 → 词头」映射——
 这就是中文简繁/地区词差异能查到词的关键，不需要额外下载 SQL dump。
 
+消歧义页（如「卡」）不会只取首段，而是抽成多义释义：各义项用 SENSE_SEP
+（ASCII 单元分隔符）连接在一列里，下游 make_dict.py 渲染成编号条目。
+
 用法：
   python tsv_from_dump.py data/zhwiki-pages-articles.xml.bz2 --lang zh \
       -o build/zh.tsv --aliases-out build/zh-aliases.tsv
@@ -66,6 +69,33 @@ CONV = re.compile(r"-\{([^{}]*)\}-")
 DISAMBIG_HINT = re.compile(
     r"可以指|可能指|是指下列|消歧义|disambiguation|may refer to", re.I
 )
+# 消歧义页的可靠信号（模板/魔术字/分类）。模板名里含 `dab` 的写法很多，
+# 但必须要求其后紧跟 `|` 或 `}}`，否则 `{{Dablink}}`（顶注模板，不是消歧义页）会误报。
+DISAMBIG_TEMPLATE = re.compile(
+    r"\{\{\s*(?:disambig\w*|dab|hndis|geodis|mathdab|numberdis|letter[- ]dab"
+    r"|road[- ]disambig\w*|消歧[义義]\w*|地名消歧[义義]|一字消歧[义義]|人物消歧[义義])"
+    r"\s*(?:\||\}\})",
+    re.I,
+)
+DISAMBIG_MAGIC = re.compile(r"__DISAMBIG__", re.I)
+DISAMBIG_CATEGORY = re.compile(
+    r"\[\[\s*(?:Category|分類|分类)\s*:\s*[^\[\]]*(?:消歧[义義]|[Dd]isambiguation)",
+    re.I,
+)
+TOP_LIST_ITEM = re.compile(r"^([*#])\s*(.+)$")
+# 消歧义页末尾的「参见 / See also」不是义项，遇到就停止收集。
+DISAMBIG_STOP_HEADING = re.compile(
+    r"^\s*=+\s*(?:参见|參見|另见|另見|相关条目|相關條目|外部链接|外部連結|"
+    r"See also|References|参考|參考|注释|註釋)\s*=+",
+    re.I,
+)
+
+# 多义释义的义项分隔符。选 ASCII 的单元分隔符（US）：正文清洗时会被 XML_ILLEGAL
+# 抹掉，所以只在清洗**之后**拼接；下游 make_dict 先按它切分再清洗，不会丢。
+SENSE_SEP = "\x1f"
+MAX_SENSES = 10      # 单个消歧义页最多收录的义项数
+SENSE_LEN = 100      # 每个义项的截断上限（字符）
+
 DROP_TITLE = re.compile(
     r"^(?:List of|Lists of|Index of|Outline of|Timeline of|Glossary of)\b"
     r"|^列表|^索引|^年表|^目录|^目錄"
@@ -158,6 +188,53 @@ def extract_lead(wikitext: str) -> str:
     return ""
 
 
+def detect_disambig(wikitext: str) -> bool:
+    """判断一页是不是消歧义页。
+
+    可靠信号是模板/魔术字/分类；少数老页面没有模板，再用「……可以指：」+ 紧跟列表兜底。
+    先用一次廉价的子串预筛，避免对每页 30 KB 正文都跑正则。
+    """
+    head = wikitext[:LEAD_SCAN]
+    if not any(k in head for k in (
+            "消歧", "isambig", "hndis", "geodis", "numberdis", "letter-dab",
+            "road-disambig", "__DISAMBIG__", "{{dab", "{{Dab",
+            "可以指", "可能指", "是指下列", "refer to")):
+        return False
+    if DISAMBIG_MAGIC.search(head):
+        return True
+    if DISAMBIG_TEMPLATE.search(head) or DISAMBIG_CATEGORY.search(head):
+        return True
+    if DISAMBIG_HINT.search(head[:600]) and re.search(r"\n\s*[*#]", head[:3000]):
+        return True
+    return False
+
+
+def extract_disambig(wikitext: str, sense_len: int = SENSE_LEN) -> list[str]:
+    """抽出消歧义页的义项（顶层列表项），每个义项清洗成一行的纯文本。
+
+    不做标题分段——各分节下的列表项一并收集，按出现顺序取前 MAX_SENSES 个。
+    嵌套子项（`**` / `##`）跳过，避免把从属说明也当成独立义项。
+    """
+    body = clean_wikitext(wikitext[:LEAD_SCAN])
+    senses: list[str] = []
+    for line in body.splitlines():
+        if DISAMBIG_STOP_HEADING.match(line):
+            break
+        m = TOP_LIST_ITEM.match(line.strip())
+        if not m:
+            continue
+        item = m.group(2).lstrip()
+        if item[:1] in ("*", "#"):  # 嵌套子项
+            continue
+        item = tidy(WS.sub(" ", item)).strip("　 ")
+        if len(item) < 2 or MARKUP_RESIDUE.search(item):
+            continue
+        senses.append(trim(item, sense_len))
+        if len(senses) >= MAX_SENSES:
+            break
+    return senses
+
+
 def trim(text: str, max_len: int) -> str:
     if not max_len or len(text) <= max_len:
         return text
@@ -180,8 +257,8 @@ def scan_dump(path: Path, lang: str, min_len: int, max_len: int,
     in_text = False
     text_buf: list[str] = []
     pages = 0
-    stats = {"ns0": 0, "redirects": 0, "entries": 0, "skip_title": 0,
-             "skip_short": 0, "no_lead": 0}
+    stats = {"ns0": 0, "redirects": 0, "entries": 0, "disambig": 0,
+             "skip_title": 0, "skip_short": 0, "no_lead": 0}
     pending: list[tuple[str, str, str]] = []
 
     def handle_page(wiki: str) -> None:
@@ -197,6 +274,14 @@ def scan_dump(path: Path, lang: str, min_len: int, max_len: int,
             stats["redirects"] += 1
             if want_redirects and redirect_target != title:
                 pending.append(("alias", title, redirect_target))
+            return
+        if detect_disambig(wiki):
+            senses = extract_disambig(wiki)
+            if senses:
+                stats["disambig"] += 1
+                pending.append(("entry", title, SENSE_SEP.join(senses)))
+            else:
+                stats["no_lead"] += 1
             return
         lead = trim(extract_lead(wiki), max_len)
         if not lead:
@@ -283,8 +368,9 @@ def scan_dump(path: Path, lang: str, min_len: int, max_len: int,
 
     sys.stderr.write(f"\r  共扫描 {pages} 页\n")
     sys.stderr.write(
-        "  统计：ns0 正文 {ns0} | 重定向 {redirects} | 输出词条 {entries} | "
-        "标题被过滤 {skip_title} | 无首段 {no_lead} | 首段过短 {skip_short}\n".format(**stats)
+        "  统计：ns0 正文 {ns0} | 重定向 {redirects} | 输出词条 {entries}"
+        "（含消歧义 {disambig}） | 标题被过滤 {skip_title} | "
+        "无首段 {no_lead} | 首段过短 {skip_short}\n".format(**stats)
     )
 
 

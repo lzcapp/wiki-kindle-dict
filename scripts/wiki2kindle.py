@@ -67,6 +67,7 @@ LANG_NAME = {
 
 PALMDB_RECORD_LIMIT = 65535
 DEFAULT_MAX_RECORDS = 62000  # 留 5% 余量
+SENSE_SEP = "\x1f"  # 多义释义的义项分隔符，与 tsv_from_dump.py / make_dict.py 一致
 CALIBRATION = ROOT / "build" / "calibration.json"
 
 
@@ -230,7 +231,9 @@ def parse_source(src: Path, kind: str, lang: str, work: Path, args) -> tuple[Pat
 
     tsv = work / "source.tsv"
     aliases = work / "aliases.tsv" if kind == "dump" else None
-    fp = f"{src.name}:{src.stat().st_size}:{kind}:{lang}:{args.min_len}:{args.sample}"
+    # 解析器版本参与指纹：解析逻辑变了，旧缓存必须失效（如新增消歧义多义释义）。
+    fp = (f"v2:{src.name}:{src.stat().st_size}:{kind}:{lang}:"
+          f"{args.min_len}:{args.sample}")
 
     if tsv.exists() and not args.force:
         log(f"  已有解析产物，跳过（{human(tsv.stat().st_size)}；--force 可强制重跑）")
@@ -425,15 +428,27 @@ def project_records(tsv: Path, divisor: float) -> int:
     return int(tsv.stat().st_size / divisor)
 
 
-def trim_definition(definition: str, max_len: int) -> str:
-    if len(definition) <= max_len:
-        return definition
-    cut = definition[:max_len]
+def _trim_text(text: str, max_len: int) -> str:
+    if len(text) <= max_len:
+        return text
+    cut = text[:max_len]
     for sep in ("。", "．", "；", ". ", ";", "，", ","):
         pos = cut.rfind(sep)
         if pos > max_len // 2:
             return cut[: pos + 1].strip()
     return cut.strip()
+
+
+def trim_definition(definition: str, max_len: int) -> str:
+    """截断过长的释义。
+
+    多义项（消歧义页，用 SENSE_SEP 连接）按义项分摊预算，避免整条列表只剩前一两项。
+    """
+    if SENSE_SEP in definition:
+        senses = definition.split(SENSE_SEP)
+        per = max(max_len // max(len(senses), 1), 40)
+        return SENSE_SEP.join(_trim_text(s, per) for s in senses)
+    return _trim_text(definition, max_len)
 
 
 def apply_budget(tsv: Path, lang: str, max_records: int, args, calib: dict) -> dict:

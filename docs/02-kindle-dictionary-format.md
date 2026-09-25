@@ -32,6 +32,14 @@
 <idx:entry name="default" scriptable="yes"><idx:orth value="广东省"><b>广东省</b><idx:infl><idx:iform value="廣東省"/><idx:iform value="广东"/></idx:infl></idx:orth><p>中华人民共和国省级行政区…</p></idx:entry><mbp:pagebreak/>
 ```
 
+多义词（消歧义页）时，义项各占一个编号段落——弹窗里自然分行，像普通词典：
+
+```xml
+<idx:entry name="default" scriptable="yes"><idx:orth value="卡"><b>卡</b></idx:orth><p><b>1.</b> 关卡，检查人、车或征收税赋的关口</p><p><b>2.</b> 卡片，一种薄的矩形物品，例如IC卡等</p><p><b>3.</b> 卡路里，能量单位</p></idx:entry><mbp:pagebreak/>
+```
+
+多段落不影响词头定位——工具找的是 `idx:orth` 里紧跟的 `<b>` 词头，正文里的 `<b>1.</b>` 只是普通加粗。
+
 ### 元素语义
 
 | 元素 | 作用 |
