@@ -76,6 +76,36 @@
 
 ## 4. 快速开始（一条命令）
 
+### 先下载数据
+
+只要一个文件——官方 `pages-articles` dump 里**同时含正文和重定向**，不用另外下 SQL：
+
+| 用途 | 链接 | 大小 |
+| --- | --- | --- |
+| 中文全量 | https://dumps.wikimedia.org/zhwiki/latest/zhwiki-latest-pages-articles.xml.bz2 | 3.2 GB |
+| 英文全量 | https://dumps.wikimedia.org/enwiki/latest/enwiki-latest-pages-articles.xml.bz2 | 23.9 GB |
+
+放进 `data/`（文件名不必改）。两种下法：
+
+```bash
+# 让主程序自动下（内部用 urllib）
+python scripts/wiki2kindle.py --lang zh --download
+
+# 或手动下，支持断点续传
+python scripts/fetch.py \
+  https://dumps.wikimedia.org/zhwiki/latest/zhwiki-latest-pages-articles.xml.bz2 \
+  data/zhwiki-pages-articles.xml.bz2
+```
+
+自己的机器上也可以用 `curl -L -C -` / `wget -c` / `aria2c`（本项目的受限环境里 curl 写不进工作区，才改用 `scripts/fetch.py`）。
+想锁定快照，把 URL 里的 `latest` 换成日期目录，如 `…/zhwiki/20260901/zhwiki-20260901-pages-articles.xml.bz2`。
+完整清单（含 DBpedia 摘要、英文「重要度」筛选所需文件）见 [docs/00](docs/00-download-list.md)。
+
+不想本地跑全量？仓库带一个手动触发的 CI 工作流 [`.github/workflows/build-zh.yml`](.github/workflows/build-zh.yml)：
+在 GitHub 的 Actions 页选它点 **Run workflow**，它会下 kindling、下 dump、全量构建，并把
+`wikipedia-zh.mobi` 传成 Artifact（可选发布到指定 Release tag）。只支持中文全量——英文 dump
+23.9 GB，GitHub-hosted runner 的磁盘装不下。
+
 **输入一个 dump 文件，输出一本词典：**
 
 ```bash
@@ -155,19 +185,22 @@ PY=python
 ```
 .
 ├── README.md                        方法论总纲
+├── .github/workflows/build-zh.yml   手动触发的 CI：全量构建中文词典并传 MOBI
 ├── docs/
+│   ├── 00-download-list.md          下载清单（dump / DBpedia / 显著性数据）
 │   ├── 01-data-sources.md           数据源对比与可用性实测
 │   ├── 02-kindle-dictionary-format.md  Kindle 词典格式规范（idx / OPF / 编译行为）
 │   ├── 03-toolchain.md              工具链选型与被淘汰方案的证据
 │   ├── 04-build-and-sideload.md     构建、验证、侧载、设备设置
 │   ├── 05-scaling-english-plan.md   规模测算与英文分卷方案
 │   ├── 06-verification.md           验证记录（冒烟测试 / 真机 / 规模实测）
-│   └── 07-automation.md             自动化工具设计（六阶段、自动决策、校准陷阱）
+│   └── 07-automation.md             自动化工具设计（七阶段、自动决策、校准陷阱）
 ├── scripts/
 │   ├── wiki2kindle.py               **一条命令跑完全程的自动化入口**
 │   ├── fetch.py                     断点续传下载器
+│   ├── fetch_kindling.py            按平台下载 kindling 二进制（CI / 非 Windows 用）
 │   ├── tsv_from_dbpedia.py          DBpedia short-abstracts → TSV
-│   ├── tsv_from_dump.py             维基官方 dump → TSV（含重定向异名）
+│   ├── tsv_from_dump.py             维基官方 dump → TSV（含重定向异名、消歧义多义释义）
 │   ├── enrich_aliases.py            归一：消歧义标题的基名补成别名
 │   └── make_dict.py                 TSV → Kindle 词典工程 → .mobi
 ├── examples/sample.tsv              最小样例词表

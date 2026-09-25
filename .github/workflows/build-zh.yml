@@ -1,0 +1,73 @@
+name: Build Chinese Kindle dictionary (full)
+
+# 手动触发：Actions → Build Chinese Kindle dictionary (full) → Run workflow。
+# 跑到自动验收为止（阶段 1-7），把 out/wikipedia-zh.mobi 上传为 Artifact；
+# 真机侧载验证不在 CI 范围内。
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "可选：把产物发布到该 Release tag（留空则只上传 Artifact）"
+        required: false
+        default: ""
+
+permissions:
+  contents: write # 仅在发布 Release 时需要
+
+concurrency:
+  group: build-zh
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # GitHub-hosted Ubuntu 约 14 GB 可用磁盘：zh dump 3.2 GB + 中间产物 + 产物 0.3 GB 足够。
+    # 英文全量（dump 23.9 GB）放不下，需自托管或更大磁盘的 runner。
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 下载 kindling（自动挑选 Linux 资产）
+        run: |
+          python scripts/fetch_kindling.py --tag v0.45.1 --platform linux --out bin/kindling
+          ./bin/kindling --version || ./bin/kindling --help
+
+      - name: 全量构建（下载 dump → 解析 → 归一 → 预算 → 打包 → 编译 → 验收）
+        run: |
+          python scripts/wiki2kindle.py --lang zh --download \
+            --kindling bin/kindling \
+            --source-label "Wikipedia (zh), CI run ${{ github.run_id }}"
+
+      - name: 磁盘与产物核对
+        if: always()
+        run: |
+          df -h /
+          ls -lh out/ 2>/dev/null || true
+          if [ -f build/auto/report.json ]; then cat build/auto/report.json; fi
+
+      - name: 上传 Artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wikipedia-zh-${{ github.run_id }}
+          path: |
+            out/wikipedia-zh.mobi
+            build/auto/report.json
+            build/auto/build.log
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: 发布到 Release（可选）
+        if: success() && github.event.inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.release_tag }}
+        run: |
+          gh release create "$TAG" out/wikipedia-zh.mobi \
+            --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes "由 CI 构建" \
+          || gh release upload "$TAG" out/wikipedia-zh.mobi \
+               --repo "$GITHUB_REPOSITORY" --clobber
