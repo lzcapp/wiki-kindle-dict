@@ -68,6 +68,8 @@ LANG_NAME = {
 PALMDB_RECORD_LIMIT = 65535
 DEFAULT_MAX_RECORDS = 62000  # 留 5% 余量
 SENSE_SEP = "\x1f"  # 多义释义的义项分隔符，与 tsv_from_dump.py / make_dict.py 一致
+SENSE_TARGET_SEP = "\x1e"  # 义项内部：目标标题 \x1e 显示文本（解析打标，阶段 3.5 消费）
+SENSE_LEN = 140  # 回查后单个义项的上限，与 tsv_from_dump.SENSE_LEN 对齐
 CALIBRATION = ROOT / "build" / "calibration.json"
 
 
@@ -75,7 +77,14 @@ def log(msg: str = "") -> None:
     print(msg, flush=True)
 
 
+_STAGE_T0: list = [0.0]  # 上一个阶段的起点，用来在阶段切换时打印上一阶段耗时
+
+
 def stage(name: str) -> None:
+    now = time.perf_counter()
+    if _STAGE_T0[0]:
+        log(f"  [计时] 上一阶段 {now - _STAGE_T0[0]:.1f}s")
+    _STAGE_T0[0] = now
     log(f"\n{'='*72}\n== {name}\n{'='*72}")
 
 
@@ -267,6 +276,117 @@ def parse_source(src: Path, kind: str, lang: str, work: Path, args) -> tuple[Pat
         json.dumps({"fingerprint": fp, "rows": rows}, ensure_ascii=False), encoding="utf-8"
     )
     return tsv, aliases
+
+
+# ---------- 阶段 3.5：回查义项目标 ----------
+
+def _sense_label(target: str, head: str) -> str:
+    """义项目标做标签时去掉冗余词头：`中期 (经济学)` + 词头 `中期` → `经济学`。
+
+    括号内容与词头相同（`卡 (卡)`）就原样保留，去了只剩单字反而更差；没有括号原样用。
+    """
+    m = re.match(r"^(.+?)\s*[（(]([^）)]+)[）)]$", target)
+    if m and m.group(1).strip() == head and m.group(2).strip() != head:
+        return m.group(2).strip()
+    return target
+
+
+def _target_first_para(defn: str) -> str:
+    """取一条释义的首段：多义条目取第一个义项，带回查标记的只留显示文本。"""
+    return defn.split(SENSE_SEP)[0].split(SENSE_TARGET_SEP)[-1].strip()
+
+
+def _lookup_defs(tsv: Path, aliases: Path | None, needed: set[str]) -> dict[str, str]:
+    """收集 needed 里各目标的释义；源表里没有的（重定向页）顺异名表再找一层。"""
+    defs: dict[str, str] = {}
+    with tsv.open(encoding="utf-8") as fh:
+        for line in fh:
+            head, _, rest = line.partition("\t")
+            if rest and head in needed and head not in defs:
+                defs[head] = _target_first_para(rest.rstrip("\n"))
+    if aliases and aliases.exists():
+        hop: dict[str, str] = {}
+        with aliases.open(encoding="utf-8") as fh:
+            for line in fh:
+                a, _, t = line.rstrip("\n").partition("\t")
+                if a in needed and a not in defs:
+                    hop[a] = t
+        for a, t in hop.items():
+            if t in defs:
+                defs[a] = defs[t]
+    return defs
+
+
+def expand_senses_stage(tsv: Path, aliases: Path | None, work: Path, args) -> Path:
+    """阶段 3.5/7 把义项里的 `目标\x1e显示文本` 换成目标条目的首段。
+
+    消歧义列表项常常只有一句干巴巴的话（有的甚至只剩一个标题），解析阶段已顺手记下
+    它指向的目标条目；这里回查词表拿目标的完整首段来替换，让每个义项都带足解释。
+    目标查不到（没入库 / 重定向没接上）就保留原显示文本，标记一并去掉。
+    """
+    stage("阶段 3.5/7  回查义项目标（目标首段替换原文）")
+    if getattr(args, "no_sense_expand", False):
+        log("  已用 --no-sense-expand 跳过（义项保留解析时的显示文本）")
+        return tsv
+    out = work / "senses-expanded.tsv"
+    if out.exists() and not args.force:
+        log(f"  已有回查产物，跳过（{human(out.stat().st_size)}；--force 可重跑）")
+        return out
+
+    needed: set[str] = set()
+    with tsv.open(encoding="utf-8") as fh:
+        for line in fh:
+            if SENSE_TARGET_SEP not in line:
+                continue
+            cols = line.rstrip("\n").split("\t", 1)
+            if len(cols) < 2:
+                continue
+            for sense in cols[1].split(SENSE_SEP):
+                if SENSE_TARGET_SEP in sense:
+                    target = sense.split(SENSE_TARGET_SEP, 1)[0].strip()
+                    if target:
+                        needed.add(target)
+    if not needed:
+        log("  词表里没有带目标的义项，跳过")
+        return tsv
+
+    defs = _lookup_defs(tsv, aliases, needed)
+    hit = sum(1 for t in needed if t in defs)
+
+    replaced = fallback = kept = 0
+    with tsv.open(encoding="utf-8") as fh, \
+            out.open("w", encoding="utf-8", newline="\n") as fo:
+        for line in fh:
+            head, sep, rest = line.rstrip("\n").partition("\t")
+            if not sep or SENSE_TARGET_SEP not in rest:
+                fo.write(line)
+                continue
+            parts: list[str] = []
+            for sense in rest.split(SENSE_SEP):
+                if SENSE_TARGET_SEP not in sense:
+                    parts.append(sense)
+                    kept += 1
+                    continue
+                target, text = sense.split(SENSE_TARGET_SEP, 1)
+                target = target.strip()
+                body = defs.get(target)
+                if not body:
+                    parts.append(text)          # 查不到目标：留原文
+                    fallback += 1
+                    continue
+                label = _sense_label(target, head)
+                body = _trim_text(body, SENSE_LEN)
+                # 首段本来就以这个词开头，再贴标签就是把词头念两遍
+                if not (body.startswith(label) or body.startswith(target)):
+                    body = f"{label}：{body}"
+                parts.append(body)
+                replaced += 1
+            fo.write(head + sep + SENSE_SEP.join(parts) + "\n")
+
+    log(f"  义项目标 {len(needed):,} 个，回查命中 {hit:,}（{hit / max(len(needed), 1):.0%}）")
+    log(f"  替换 {replaced:,} 个义项、保留原文 {fallback:,} 个（另有 {kept:,} 个无目标义项未动）")
+    log(f"  → {out.name}（{human(out.stat().st_size)}）")
+    return out
 
 
 # ---------- 阶段 4：归一别名 ----------
@@ -553,7 +673,7 @@ def pack_and_build(tsv: Path, aliases: Path | None, lang: str, work: Path,
 
 # ---------- 阶段 6：验收 ----------
 
-def check_index_records(kindling: Path, mobi: Path) -> tuple[bool, str]:
+def check_index_records(dump: str) -> tuple[bool, str]:
     """检查索引记录有没有超过 MOBI 的 64 KB 上限。
 
     ⚠️ 这条是**用血换来的**：INDX 记录里 `idxt_offset` 是 **16 位**（上限 65,535）。
@@ -561,11 +681,12 @@ def check_index_records(kindling: Path, mobi: Path) -> tuple[bool, str]:
     键一多（比如英文 104 万词头 + 397 万别名 = 468 万键 → 3299 个叶子），
     根索引就会长到 190 KB、偏移量溢出 16 位 —— **设备读不到根索引表，整本词典查不到词**。
     而 kindling 自己的 `lookup`/`dump` 能正确处理 >64KB，所以**只有真机会暴露**。
+
+    入参是已经 dump 好的文本：verify() 会 dump 一次给全场复用，
+    （346 MB 的 MOBI 要解出 575 MB 文本，跑两遍白费十几秒）。
     """
-    r = run([kindling, "dump", mobi], capture_output=True, text=True,
-            encoding="utf-8", errors="replace")
     fields: dict[str, dict[str, str]] = {}
-    for m in re.finditer(r"^indx\[(\d+)\]\.(\w+)\s*=\s*(\S+)", r.stdout or "", re.M):
+    for m in re.finditer(r"^indx\[(\d+)\]\.(\w+)\s*=\s*(\S+)", dump, re.M):
         fields.setdefault(m.group(1), {})[m.group(2)] = m.group(3)
     worst_len = worst_off = 0
     bad = 0
@@ -606,7 +727,7 @@ def verify(mobi: Path, kindling: Path, work: Path, lang: str, calib: dict,
     not_found = re.findall(r"(\d+) / \d+ entries not found in text blob", build_log)
 
     ok = True
-    idx_ok, idx_detail = check_index_records(kindling, mobi)
+    idx_ok, idx_detail = check_index_records(dump)
     # 构建日志里的 P1 警告也要当失败——曾经有一条 64KB 溢出的警告被放过去了，
     # 结果发布出去的英文版在真机上查不到词。
     p1 = re.search(r"(\d+) P1 warnings?", build_log)
@@ -696,6 +817,8 @@ def main() -> int:
                     help="归一阶段跳过简繁字形（非中文语境用不上）")
     ap.add_argument("--no-enrich", action="store_true",
                     help="跳过整个归一阶段（不补任何别名）")
+    ap.add_argument("--no-sense-expand", action="store_true",
+                    help="跳过义项回查（多义义项保留解析时的显示文本，不做目标首段替换）")
     ap.add_argument("--download", action="store_true", help="本地无数据时自动下载")
     ap.add_argument("--force", action="store_true", help="忽略缓存，全部重跑")
     args = ap.parse_args()
@@ -716,6 +839,7 @@ def main() -> int:
     kindling = ensure_kindling(args.kindling, args.download)
     src, kind = acquire_source(args, lang)
     tsv, aliases = parse_source(src, kind, lang, args.work, args)
+    tsv = expand_senses_stage(tsv, aliases, args.work, args)
     aliases = enrich_aliases_stage(tsv, aliases, args.work, args)
 
     if args.importance and args.top:
@@ -746,6 +870,7 @@ def main() -> int:
                     "seconds": round(time.time() - t0, 1)}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    log(f"  [计时] 上一阶段 {time.perf_counter() - _STAGE_T0[0]:.1f}s")
     log(f"\n总用时 {time.time()-t0:.0f} 秒 —— {'全部通过' if ok else '有检查项未通过，见上'}")
     return 0 if ok else 1
 

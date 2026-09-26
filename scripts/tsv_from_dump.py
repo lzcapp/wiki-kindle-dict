@@ -8,6 +8,8 @@
 
 消歧义页（如「卡」）不会只取首段，而是抽成多义释义：各义项用 SENSE_SEP
 （ASCII 单元分隔符）连接在一列里，下游 make_dict.py 渲染成编号条目。
+义项若指向别的条目，还会前置 `目标标题<SENSE_TARGET_SEP>显示文本`，
+供回查阶段拿目标条目的首段把义项补完整。
 
 用法：
   python tsv_from_dump.py data/zhwiki-pages-articles.xml.bz2 --lang zh \
@@ -44,7 +46,14 @@ LINK_WITH_TEXT = re.compile(r"\[\[([^\]|]+)\|([^\]]*)\]\]")
 LINK_PLAIN = re.compile(r"\[\[([^\]]+)\]\]")
 EXT_LINK = re.compile(r"\[(?:https?|ftp)://[^\s\]]+\s*([^\]]*)\]")
 BOLD_ITALIC = re.compile(r"'{2,5}")
-LANG_TEMPLATE = re.compile(r"\{\{\s*(?:lang|langue|lang-zh|zh|transl|nihongo)\s*\|([^{}]*)\}\}", re.I)
+LANG_TEMPLATE = re.compile(
+    r"\{\{\s*(?:lang\w*|lang-[a-z]+|zh|transl|nihongo)\s*\|([^{}]*)\}\}", re.I)
+# 链接类模板：本质是「链到某条目并显示一个名字」，不能当噪声删掉。
+# 消歧义列表项几乎都用 `{{le|条目}}` / `{{link-en|中文条目|英文条目}}` 开头，
+# 整段替换成空格后义项就只剩后面的逗号（`中期` 页曾变成 `，有丝分裂阶段。`）。
+LINK_TEMPLATE = re.compile(
+    r"\{\{\s*(le|link[\w-]*|l|wikt|wikipedia|wp|中国国道名)\s*\|([^{}]*)\}\}", re.I)
+LANG_CODE = re.compile(r"^[a-z]{2,3}(?:-[a-z]{2,4})?$", re.I)
 INNER_TEMPLATE = re.compile(r"\{\{[^{}]*\}\}")
 XML_ILLEGAL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufffe\uffff]")
 WS = re.compile(r"[ \t\u00a0]+")
@@ -93,8 +102,11 @@ DISAMBIG_STOP_HEADING = re.compile(
 # 多义释义的义项分隔符。选 ASCII 的单元分隔符（US）：正文清洗时会被 XML_ILLEGAL
 # 抹掉，所以只在清洗**之后**拼接；下游 make_dict 先按它切分再清洗，不会丢。
 SENSE_SEP = "\x1f"
+# 义项内部标记：`目标标题 \x1e 显示文本`。回查阶段拿目标标题查词表首段来替换显示文本；
+# 没跑到回查时 make_dict.clean() 会把 \x1e 当非法控制字符剥掉，退化成显示原文。
+SENSE_TARGET_SEP = "\x1e"
 MAX_SENSES = 10      # 单个消歧义页最多收录的义项数
-SENSE_LEN = 100      # 每个义项的截断上限（字符）
+SENSE_LEN = 140      # 每个义项的截断上限（字符）
 
 DROP_TITLE = re.compile(
     r"^(?:List of|Lists of|Index of|Outline of|Timeline of|Glossary of)\b"
@@ -106,22 +118,67 @@ DROP_TITLE = re.compile(
 EMPTY_BRACKETS = re.compile(r"（\s*）|\(\s*\)|［\s*］|\[\s*\]|【\s*】|｛\s*｝")
 SPACE_BEFORE_PUNCT = re.compile(r"[ \t]+([，。、；：？！）》」』】])")
 SPACE_AFTER_OPEN = re.compile(r"([（《「『【])[ \t]+")
+# 句首标点兜底：模板/链接被清掉后可能剩下引导标点（`，英国多塞特郡的岛`）。
+# 只剥真正的句读，**不碰** `.`（`.er` 顶级域名）和 `？`（`？ (陳奕迅專輯)`）——
+# 那 135 个是合法条目名的首字符，一刀切会误伤。
+LEADING_PUNCT = re.compile(r"^[，。、；：！]+|^[,;:]+")
 # 清洗后仍残留的 wiki 标记：出现即判定这段没洗干净，换下一段
 MARKUP_RESIDUE = re.compile(r"\[\[|\]\]|\{\{|\}\}|<ref|&lt;|&gt;|\|-|\{\|")
 
+# 义项里取链接目标用：`[[A]]` / `[[A|B]]` / `[[A#sec|B]]` → (目标 A, 显示 B 或 A)
+WIKILINK_TARGET = re.compile(r"\[\[\s*([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]*))?\]")
+# 这些命名空间的链接不是词条（文件/分类/模板…），不能拿去回查
+LINK_NS = re.compile(
+    r"^(?:category|file|image|media|wikipedia|template|portal|help|draft|module|special|"
+    r"talk|user|mos|wp|list|草稿|分类|分類|文件|圖像|图像|媒体|媒體|档案|檔案|维基百科|"
+    r"維基百科|模板|帮助|幫助|草稿|模块|模組|特殊|讨论|討論|用户|用戶|列表)\s*:", re.I)
+
 READ_CHUNK = 1 << 23  # 8 MB
+
+
+def _lang_display(m: re.Match) -> str:
+    """`{{langx|en|country}}` → 显示文本：最后一个非赋值参数（跳过 `nocat=y` 之类开关）。"""
+    parts = [p.strip() for p in m.group(1).split("|") if p.strip() and "=" not in p]
+    return parts[-1] if parts else " "
+
+
+def _link_args(m: re.Match) -> list[str]:
+    """链接模板的参数列表；`{{l|语言|条目}}` 要跳过第 1 参的语言码。
+
+    只按位置跳第 1 参，不能拿 `[a-z]{2,3}` 去全表过滤——那会把 `{{l|en|Foo}}` 里
+    三字母的 `Foo` 也当语言码清掉（踩过一次）。
+    """
+    args = [a.strip() for a in m.group(2).split("|") if a.strip()]
+    if m.group(1).lower() == "l" and len(args) > 1 and LANG_CODE.match(args[0]):
+        args = args[1:]
+    return args
+
+
+def _link_display(m: re.Match) -> str:
+    """`{{le|条目}}` / `{{link-en|中文条目|英文条目}}` → 显示文本取第 1 个参数。
+
+    第 1 个参数是同一语言维基里的条目名（对中文词典最稳）；`{{l|语言|条目}}` 例外，
+    第 1 个参数是语言码，由 `_link_args` 跳过。
+    """
+    args = _link_args(m)
+    return args[0] if args else " "
 
 
 def strip_templates(text: str) -> str:
     """去掉 {{...}}（含嵌套）。反复用正则剥最内层，走 C 正则而非逐字符循环。"""
     if "{{" not in text:
         return text
-    text = LANG_TEMPLATE.sub(lambda m: m.group(1).split("|")[-1], text)
+    # 链接/语言模板先收编成显示文本，剩下的（infobox、cite…）才当噪声删掉。
+    # 顺序不能反：让通用 INNER_TEMPLATE 先跑，显示文本会连同模板一起被吃掉。
+    text = LANG_TEMPLATE.sub(_lang_display, text)
+    text = LINK_TEMPLATE.sub(_link_display, text)
     prev = None
     for _ in range(30):
         if text == prev or "{{" not in text:
             break
         prev = text
+        text = LANG_TEMPLATE.sub(_lang_display, text)
+        text = LINK_TEMPLATE.sub(_link_display, text)
         text = INNER_TEMPLATE.sub(" ", text)
     return text
 
@@ -162,11 +219,12 @@ def clean_wikitext(text: str) -> str:
 
 
 def tidy(text: str) -> str:
-    """收尾清理：空的括号对、CJK 标点前后的多余空格、连续空白。"""
+    """收尾清理：空的括号对、CJK 标点前后的多余空格、连续空白、句首标点。"""
     text = EMPTY_BRACKETS.sub("", text)
     text = SPACE_BEFORE_PUNCT.sub(r"\1", text)
     text = SPACE_AFTER_OPEN.sub(r"\1", text)
-    return WS.sub(" ", text).strip()
+    text = WS.sub(" ", text).strip()
+    return LEADING_PUNCT.sub("", text).strip()
 
 
 def extract_lead(wikitext: str) -> str:
@@ -209,15 +267,62 @@ def detect_disambig(wikitext: str) -> bool:
     return False
 
 
-def extract_disambig(wikitext: str, sense_len: int = SENSE_LEN) -> list[str]:
+LEAD_STRIP = " \t'\"“”‘’《》〈〉（）()「」『』【】"
+
+
+def _leads_with(display: str, text: str) -> bool:
+    """义项文本是不是以该链接的显示文本开头（前面允许引号/书名号等包裹符）。
+
+    只有「这一项就是在讲这个链接目标」时才成立。句中顺带提到的链接不是义项目标，
+    拿它的首段去替换会张冠李戴，比如 `位於[[加拿大]]卡爾加里` 的目标不是加拿大、
+    `常組合成其他[[政治學]]術語` 的目标不是政治学——这类一律不打标记。
+    """
+    if not display:
+        return False
+    return text.lstrip(LEAD_STRIP).startswith(display)
+
+
+def link_target(item: str) -> tuple[str, str]:
+    """取列表项指向的目标条目名与显示文本：`[[A|B]]` → (A, B)，`{{le|A|B}}` → (A, A)。
+
+    取文本里**位置更靠前**的那个——消歧义列表项通常以目标开头，比如
+    `{{link-en|中期 (生物学)|metaphase}}（…），[[有丝分裂]]阶段。` 的义项目标是
+    「中期 (生物学)」，而不是句中顺带提到的「有丝分裂」。
+    命名空间链接（文件/分类/模板…）不是词条，忽略。
+    """
+    best: tuple[int, str, str] | None = None   # (位置, 目标, 显示文本)
+    m = WIKILINK_TARGET.search(item)
+    if m:
+        target = html.unescape(m.group(1)).strip()
+        if target and not LINK_NS.match(target):
+            display = m.group(2) or target   # 没有 `|显示文本` 时，显示的就是目标名
+            best = (m.start(), target, html.unescape(display).strip())
+    m = LINK_TEMPLATE.search(item)
+    if m:
+        args = _link_args(m)
+        if args and (best is None or m.start() < best[0]):
+            target = html.unescape(args[0])
+            best = (m.start(), target, target)
+    return (best[1], best[2]) if best else ("", "")
+
+
+def extract_disambig(wikitext: str, sense_len: int = SENSE_LEN,
+                     page_title: str | None = None) -> list[str]:
     """抽出消歧义页的义项（顶层列表项），每个义项清洗成一行的纯文本。
 
     不做标题分段——各分节下的列表项一并收集，按出现顺序取前 MAX_SENSES 个。
     嵌套子项（`**` / `##`）跳过，避免把从属说明也当成独立义项。
+
+    与「先整页清洗再切行」的旧写法相比，这里按**原始行**逐项清洗，为的是在清洗
+    把 `[[A|B]]` / `{{link-en|A|B}}` 拍平之前先记下目标 A；拿到目标就前置
+    `<目标>\\x1e<显示文本>`（SENSE_TARGET_SEP），交给回查阶段取目标条目首段。
     """
-    body = clean_wikitext(wikitext[:LEAD_SCAN])
+    lines = wikitext[:LEAD_SCAN].splitlines()
     senses: list[str] = []
-    for line in body.splitlines():
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        i += 1
         if DISAMBIG_STOP_HEADING.match(line):
             break
         m = TOP_LIST_ITEM.match(line.strip())
@@ -226,10 +331,19 @@ def extract_disambig(wikitext: str, sense_len: int = SENSE_LEN) -> list[str]:
         item = m.group(2).lstrip()
         if item[:1] in ("*", "#"):  # 嵌套子项
             continue
-        item = tidy(WS.sub(" ", item)).strip("　 ")
+        # 多行模板（续行没带列表符）：花括号配不平就并进来，否则残留 {{ 会被当没洗干净丢掉
+        while item.count("{{") > item.count("}}") and i < len(lines):
+            item += " " + lines[i].strip()
+            i += 1
+        target, display = link_target(item)
+        item = tidy(WS.sub(" ", clean_wikitext(item))).strip("　 ")
         if len(item) < 2 or MARKUP_RESIDUE.search(item):
             continue
-        senses.append(trim(item, sense_len))
+        text = trim(item, sense_len)
+        if (target and target != page_title
+                and _leads_with(display, text)):   # 句中顺带提到的链接不算义项目标
+            text = f"{target}{SENSE_TARGET_SEP}{text}"
+        senses.append(text)
         if len(senses) >= MAX_SENSES:
             break
     return senses
@@ -276,7 +390,7 @@ def scan_dump(path: Path, lang: str, min_len: int, max_len: int,
                 pending.append(("alias", title, redirect_target))
             return
         if detect_disambig(wiki):
-            senses = extract_disambig(wiki)
+            senses = extract_disambig(wiki, page_title=title)
             if senses:
                 stats["disambig"] += 1
                 pending.append(("entry", title, SENSE_SEP.join(senses)))

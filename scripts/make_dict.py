@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -29,6 +30,9 @@ MAX_ALIASES_PER_ENTRY = 64
 # `释义1\x1f释义2\x1f…`，这里切分后逐条渲染成编号段落。
 # 注意：clean() 会把它当非法控制字符删掉，所以必须先切分再 clean。
 SENSE_SEP = "\x1f"
+# 义项内部的回查目标标记：`目标标题\x1e显示文本`。目标是给回查阶段（wiki2kindle）
+# 查目标条目首段用的元数据；没有回查时直接落到正文会让词头重复两遍，所以这里只留显示文本。
+SENSE_TARGET_SEP = "\x1e"
 
 XML_ILLEGAL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufffe\uffff]")
 WS = re.compile(r"\s+")
@@ -59,6 +63,11 @@ def esc(text: str) -> str:
     return html.escape(text, quote=True)
 
 
+def _sense_text(sense: str) -> str:
+    """义项带回查目标（`目标\x1e显示文本`）时只取显示文本，再做常规清洗。"""
+    return clean(sense.split(SENSE_TARGET_SEP)[-1])
+
+
 def read_tsv(path: Path):
     """产出 (headword, [sense, ...], [alias, ...])，自动去重词头。
 
@@ -75,7 +84,7 @@ def read_tsv(path: Path):
                 print(f"  跳过第 {lineno} 行：列数不足", file=sys.stderr)
                 continue
             head = clean(parts[0])
-            senses = [s for s in (clean(x) for x in parts[1].split(SENSE_SEP)) if s]
+            senses = [s for s in (_sense_text(x) for x in parts[1].split(SENSE_SEP)) if s]
             if not head or not senses:
                 continue
             if head in seen:
@@ -233,6 +242,13 @@ def write_usage(build: Path, lang: str, title: str, source: str, stamp: str, cou
     (build / "usage.html").write_text(page, encoding="utf-8")
 
 
+def log_stage(t0: list, name: str) -> None:
+    """阶段计时：把打包过程的耗时打出来，方便定位瓶颈。"""
+    now = time.perf_counter()
+    print(f"  [计时] {name} {now - t0[0]:.1f}s（本阶段 {now - t0[1]:.1f}s）", flush=True)
+    t0[1] = now
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tsv", required=True, type=Path)
@@ -248,6 +264,8 @@ def main() -> int:
     ap.add_argument("--mobi", type=Path, default=None)
     args = ap.parse_args()
 
+    t0 = [time.perf_counter(), time.perf_counter()]
+
     if args.out.exists():
         shutil.rmtree(args.out)
     args.out.mkdir(parents=True)
@@ -256,6 +274,7 @@ def main() -> int:
     )
 
     rows = list(read_tsv(args.tsv))
+    log_stage(t0, "读词表")
     if args.aliases:
         alias_map: dict[str, list[str]] = defaultdict(list)
         with args.aliases.open("r", encoding="utf-8") as fh:
@@ -276,13 +295,16 @@ def main() -> int:
             merged.append((head, senses, aliases))
         rows = merged
         print(f"并入异名 {total} 条（单条上限 {MAX_ALIASES_PER_ENTRY}）")
+    log_stage(t0, "并异名")
     rows.sort(key=lambda r: r[0])
     if not rows:
         print("没有可用词条", file=sys.stderr)
         return 1
+    log_stage(t0, "排序")
 
     uid = f"wikipedia-dict-{args.lang}"
     content_files = write_content(args.out, args.lang, args.title, rows, args.chunk)
+    log_stage(t0, "写正文")
 
     bad = check_well_formed(args.out, content_files)
     if bad:
@@ -290,10 +312,12 @@ def main() -> int:
         for item in bad:
             print("  " + item, file=sys.stderr)
         return 1
+    log_stage(t0, "正文良构自检")
 
     write_opf(args.out, args.lang, args.title, uid, content_files)
     write_ncx(args.out, args.title, uid)
     write_usage(args.out, args.lang, args.title, args.source, args.stamp, len(rows))
+    log_stage(t0, "写 OPF/NCX/署名页")
 
     total = sum((args.out / f).stat().st_size for f in content_files)
     print(f"词条 {len(rows)} 条，正文 {len(content_files)} 个文件，共 {total/1048576:.1f} MB")
