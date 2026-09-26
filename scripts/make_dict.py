@@ -39,7 +39,11 @@ HTML_HEAD = (
     'xmlns:idx="http://www.mobipocket.com/idx" '
     'xmlns:mbp="http://www.mobipocket.com" xml:lang="{lang}" lang="{lang}">\n'
     "<head><meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\"/>"
-    "<title>{title}</title></head>\n"
+    "<title>{title}</title>"
+    # 内部样式表：Kindle 默认给段落首行缩进（Amazon 规范 Text Guideline #3），
+    # 查词弹层里表现为释义前缩进；kindling 会把 <link> 的 CSS 编译进正文头部的
+    # <style> 块（MOBI 内部样式表），这是唯一能存活的样式通道。
+    '<link rel="stylesheet" type="text/css" href="style.css"/></head>\n'
     '<body><mbp:frameset>\n'
 )
 
@@ -104,6 +108,8 @@ def entry_xhtml(head: str, senses: list[str], aliases: list[str]) -> str:
     return (
         '<idx:entry name="default" scriptable="yes">'
         f'<idx:orth value="{esc(head)}"><b>{esc(head)}</b>{infl}</idx:orth>'
+        # 释义不要内联 style（kindling 会剥离）；去首行缩进走 head 里的内部样式表，
+        # 见 HTML_HEAD 的 <link> 与 main() 写出的 style.css。
         f"{body}"
         "</idx:entry><mbp:pagebreak/>\n"
     )
@@ -159,6 +165,7 @@ def write_opf(build: Path, lang: str, title: str, uid: str, content_files: list[
     items = [
         '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>',
         '<item id="usage" href="usage.html" media-type="application/xhtml+xml"/>',
+        '<item id="css" href="style.css" media-type="text/css"/>',
     ]
     for i, name in enumerate(content_files, 1):
         items.append(
@@ -244,6 +251,9 @@ def main() -> int:
     if args.out.exists():
         shutil.rmtree(args.out)
     args.out.mkdir(parents=True)
+    (args.out / "style.css").write_text(
+        "p { text-indent: 0; }\n", encoding="utf-8"
+    )
 
     rows = list(read_tsv(args.tsv))
     if args.aliases:
